@@ -1,0 +1,62 @@
+# Environment and secrets
+.env
+*.env
+.env.*
+!.env.example
+!*.env.example
+service_account.json
+*.pem
+*.key
+token.json
+client_secret*.json
+
+# Python & Virtual environments
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.bak
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Node & Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+node_modules/
+dist/
+
+# SQLite & local databases
+*.db
+*.sqlite
+*.sqlite3
+pipeline.db
+
+# Storage & media files
+uploads/
+processed/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

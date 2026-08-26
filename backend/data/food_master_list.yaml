@@ -1,0 +1,40 @@
+# Indian ASMR Food Master List
+# Source: n8n "Indian ASMR Food Shorts - Multi Agent" workflow
+# 36 items — verbatim from the masterList array in the Item Checker node
+foods:
+  - pesarattu
+  - neer dosa
+  - moong dal cheela
+  - akki roti
+  - rumali roti
+  - puran poli
+  - uttapam
+  - appam
+  - malpua
+  - thalipeeth
+  - khakhra
+  - besan chilla
+  - sabudana vada
+  - medu vada
+  - kanda bhaji
+  - mirchi bajji
+  - dhokla
+  - khandvi
+  - misal pav
+  - vada pav
+  - litti
+  - kachori
+  - samosa
+  - jalebi
+  - gulab jamun
+  - rasgulla
+  - kulfi
+  - shrikhand
+  - chole bhature
+  - pani puri
+  - bhel puri
+  - sev puri
+  - idiyappam
+  - set dosa
+  - rava dosa
+  - mysore masala dosa
