@@ -13,7 +13,7 @@ import {
   Clock,
   ArrowRight,
 } from 'lucide-react'
-import client from '../api/client'
+import client, { formatErrorMessage } from '../api/client'
 
 export default function Upload() {
   const navigate = useNavigate()
@@ -92,7 +92,7 @@ export default function Upload() {
     try {
       const q = rowId && String(rowId).trim() ? `&row_id=${encodeURIComponent(String(rowId).trim())}` : ''
       const res = await client.get(`/posts/sheet-row?channel=${channel}${q}`)
-      if (res.data.found) {
+      if (res.data?.found) {
         setSheetPreview(res.data)
         setCustomTitle(res.data.title || '')
         setCustomDescription(res.data.description || '')
@@ -168,12 +168,13 @@ export default function Upload() {
     try {
       const res = await client.post('/posts', fd)
       setProgress('Upload complete! Redirecting to post detail...')
-      setTimeout(() => navigate(`/post/${res.data.id}`), 700)
+      setTimeout(() => {
+        navigate(`/post/${res.data.id}`)
+      }, 700)
     } catch (err) {
-      setError(err.response?.data?.detail || String(err))
-    } finally {
-      setLoading(false)
+      setError(formatErrorMessage(err))
       setProgress('')
+      setLoading(false)
     }
   }
 

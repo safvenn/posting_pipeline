@@ -20,7 +20,7 @@ import {
   EyeOff,
 } from 'lucide-react'
 import InstagramIcon from '../components/InstagramIcon'
-import client from '../api/client'
+import client, { formatErrorMessage } from '../api/client'
 import { parseUTCDate } from '../utils/timeFormat'
 
 function fmtNumber(n) {
@@ -279,7 +279,7 @@ export default function ChannelStats() {
     client
       .get('/channels')
       .then(res => setChannels(res.data))
-      .catch(err => setError(err.response?.data?.detail || err.message))
+      .catch(err => setError(formatErrorMessage(err)))
       .finally(() => setLoading(false))
   }
 
