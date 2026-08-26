@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     worker_ssh_port: int = 22
     worker_ssh_user: str = "ubuntu"
     worker_ssh_key_path: str = "~/.ssh/id_rsa"
+    worker_ssh_key_content: str = ""
     worker_ssh_password: str = ""
     gwr_worker_dir: str = "/home/ubuntu/video-worker"
     gwr_tmp_dir: str = "/home/ubuntu/video-worker/tmp"

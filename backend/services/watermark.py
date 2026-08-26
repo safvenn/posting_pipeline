@@ -34,12 +34,13 @@ logger = logging.getLogger(__name__)
 # SSH helpers                                                                   #
 # --------------------------------------------------------------------------- #
 
+import io
+
+
 def _ssh_client() -> paramiko.SSHClient:
     """Open an authenticated SSH connection to the worker."""
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    key_path = os.path.expanduser(settings.worker_ssh_key_path) if settings.worker_ssh_key_path else ""
 
     connect_kwargs = {
         "hostname": settings.worker_ssh_host,
@@ -47,8 +48,28 @@ def _ssh_client() -> paramiko.SSHClient:
         "username": settings.worker_ssh_user,
         "timeout": 30,
     }
-    if key_path and os.path.exists(key_path):
-        connect_kwargs["key_filename"] = key_path
+
+    # 1. In-memory SSH key content from environment variable
+    if getattr(settings, "worker_ssh_key_content", "") and settings.worker_ssh_key_content.strip():
+        key_str = settings.worker_ssh_key_content.strip()
+        key_io = io.StringIO(key_str)
+        try:
+            connect_kwargs["pkey"] = paramiko.RSAKey.from_private_key(key_io)
+        except Exception:
+            key_io.seek(0)
+            try:
+                connect_kwargs["pkey"] = paramiko.Ed25519Key.from_private_key(key_io)
+            except Exception:
+                key_io.seek(0)
+                connect_kwargs["pkey"] = paramiko.PKey.from_private_key(key_io)
+
+    # 2. Key file path
+    elif settings.worker_ssh_key_path:
+        key_path = os.path.expanduser(settings.worker_ssh_key_path)
+        if os.path.exists(key_path):
+            connect_kwargs["key_filename"] = key_path
+
+    # 3. Password fallback
     if settings.worker_ssh_password:
         connect_kwargs["password"] = settings.worker_ssh_password
 
@@ -146,7 +167,7 @@ def resolve_video_path(path_str: Optional[str], is_clean: bool = False) -> Optio
     return p
 
 
-def remove_watermark(db: Session, post_id: int) -> None:
+def remove_watermark(post_id: int, db: Session | None = None) -> None:
     """
     Orchestrate full watermark removal pipeline for post_id:
       1. Connect SSH + SFTP
@@ -157,6 +178,11 @@ def remove_watermark(db: Session, post_id: int) -> None:
       6. Cleanup remote tmp files
       7. Update post: clean_video_path, status='cleaned'
     """
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
     ssh: paramiko.SSHClient | None = None
     local_clean_path: Path | None = None
     job_id = f"{post_id}-{uuid.uuid4().hex[:8]}"
@@ -333,7 +359,8 @@ def remove_watermark(db: Session, post_id: int) -> None:
         except Exception:
             pass
 
-        db.close()
+        if should_close_db:
+            db.close()
 
 
 def _parse_gwr_error(stdout: str, stderr: str) -> str:
