@@ -144,7 +144,7 @@ async def create_post(
     upload_dir = settings.upload_path()
     suffix = Path(video.filename or "video.mp4").suffix or ".mp4"
     filename = f"{uuid.uuid4().hex}{suffix}"
-    dest = upload_dir / filename
+    dest = (upload_dir / filename).resolve()
 
     try:
         with dest.open("wb") as f:

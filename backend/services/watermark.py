@@ -157,13 +157,33 @@ def resolve_video_path(path_str: Optional[str], is_clean: bool = False) -> Optio
         return None
     normalized = str(path_str).replace("\\", "/")
     p = Path(normalized)
-    if p.exists():
+    if p.is_file() and p.exists():
         return p
-    # Fallback to current upload/processed directory by filename
+
+    # Check absolute resolution
+    try:
+        p_abs = p.resolve()
+        if p_abs.is_file() and p_abs.exists():
+            return p_abs
+    except Exception:
+        pass
+
+    # Fallback to configured upload/processed directory by filename
     base_dir = settings.processed_path() if is_clean else settings.upload_path()
-    fallback = base_dir / p.name
-    if fallback.exists():
+    fallback = (base_dir / p.name).resolve()
+    if fallback.is_file() and fallback.exists():
         return fallback
+
+    # Check /var/data mount fallback
+    var_data_fallback = (Path("/var/data") / ("processed" if is_clean else "uploads") / p.name).resolve()
+    if var_data_fallback.is_file() and var_data_fallback.exists():
+        return var_data_fallback
+
+    # Check project directory relative fallback
+    cwd_fallback = (Path.cwd() / ("processed" if is_clean else "uploads") / p.name).resolve()
+    if cwd_fallback.is_file() and cwd_fallback.exists():
+        return cwd_fallback
+
     return p
 
 

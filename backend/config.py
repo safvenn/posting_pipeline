@@ -84,17 +84,26 @@ class Settings(BaseSettings):
     asmr_food_sheet_tab: str = "Sheet1"
 
     def upload_path(self) -> Path:
-        p = Path(self.upload_dir)
+        if Path("/var/data").exists() and Path("/var/data").is_dir():
+            p = (Path("/var/data") / "uploads").resolve()
+        else:
+            p = Path(self.upload_dir).resolve()
         p.mkdir(parents=True, exist_ok=True)
         return p
 
     def processed_path(self) -> Path:
-        p = Path(self.processed_dir)
+        if Path("/var/data").exists() and Path("/var/data").is_dir():
+            p = (Path("/var/data") / "processed").resolve()
+        else:
+            p = Path(self.processed_dir).resolve()
         p.mkdir(parents=True, exist_ok=True)
         return p
 
     def log_path(self) -> Path:
-        p = Path(self.log_dir)
+        if Path("/var/data").exists() and Path("/var/data").is_dir():
+            p = (Path("/var/data") / "logs").resolve()
+        else:
+            p = Path(self.log_dir).resolve()
         p.mkdir(parents=True, exist_ok=True)
         return p
 
