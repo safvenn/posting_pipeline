@@ -43,6 +43,24 @@ def _gc() -> gspread.Client:
     return gspread.authorize(creds)
 
 
+import csv
+import io
+import re
+import httpx
+
+
+def _extract_sheet_id(val: str) -> str:
+    """Extract clean Google Sheet ID from URL or raw ID."""
+    if not val:
+        return ""
+    val = val.strip()
+    # Match standard docs.google.com/spreadsheets/d/<ID>
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", val)
+    if m and not val.startswith("https://docs.google.com/spreadsheets/d/e/"):
+        return m.group(1)
+    return val
+
+
 def _sheet(channel: str) -> gspread.Worksheet:
     """Return the worksheet for the given channel."""
     gc = _gc()
@@ -78,12 +96,38 @@ def _sheet(channel: str) -> gspread.Worksheet:
             "Please configure the Sheet ID in Channel Settings."
         )
 
-    sh = gc.open_by_key(sheet_id)
+    clean_id = _extract_sheet_id(sheet_id)
+    sh = gc.open_by_key(clean_id)
     return sh.worksheet(tab_name) if tab_name else sh.sheet1
 
 
 def get_all_rows(channel: str) -> list[dict]:
     """Return all rows as list of dicts (header row as keys)."""
+    # Check if channel configured with a published CSV URL
+    sheet_id = None
+    try:
+        from backend.database import SessionLocal
+        from backend.models import ChannelConfig
+        with SessionLocal() as db:
+            cfg = db.query(ChannelConfig).filter(ChannelConfig.key == channel, ChannelConfig.is_active == True).first()
+            if cfg and cfg.sheet_id:
+                sheet_id = cfg.sheet_id
+    except Exception:
+        pass
+
+    if not sheet_id and settings.google_sheets_id_channel_a:
+        sheet_id = settings.google_sheets_id_channel_a
+
+    # Fallback to direct HTTP fetch if a published CSV URL is provided
+    if sheet_id and ("pub?output=csv" in sheet_id or "pub?gid=" in sheet_id or "/d/e/2PACX-" in sheet_id):
+        try:
+            resp = httpx.get(sheet_id, timeout=15.0, follow_redirects=True)
+            if resp.status_code == 200:
+                reader = csv.DictReader(io.StringIO(resp.text))
+                return [dict(r) for r in reader if any(r.values())]
+        except Exception as csv_err:
+            logger.warning("Error fetching published CSV sheet: %s", csv_err)
+
     ws = _sheet(channel)
     records = ws.get_all_records(default_blank="")
     return records
