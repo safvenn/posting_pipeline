@@ -11,19 +11,14 @@ from alembic import context
 # Add project root to path so we can import backend.*
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from backend.database import Base  # noqa: E402
+from backend.database import Base, normalize_db_url  # noqa: E402
 from backend.models import Post    # noqa: E402, F401 — must import models to register them
 from backend.config import settings
 
 config = context.config
 
 # Override sqlalchemy.url from our settings
-db_url = settings.database_url
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
-elif db_url.startswith("mysql://"):
-    db_url = db_url.replace("mysql://", "mysql+pymysql://", 1)
-config.set_main_option("sqlalchemy.url", db_url)
+config.set_main_option("sqlalchemy.url", normalize_db_url(settings.database_url))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
