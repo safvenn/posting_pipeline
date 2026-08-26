@@ -153,10 +153,15 @@ def _upload_single_post(post: Post, db) -> bool:
         _set_status(db, post, "failed", f"auth error: {exc}")
         return False
 
-    video_path = post.clean_video_path or post.video_path
-    if not video_path or not os.path.exists(video_path):
-        _set_status(db, post, "failed", f"video file not found: {video_path}")
+    from backend.services.watermark import resolve_video_path
+    video_p = resolve_video_path(post.clean_video_path, is_clean=True)
+    if not video_p or not video_p.exists():
+        video_p = resolve_video_path(post.video_path, is_clean=False)
+
+    if not video_p or not video_p.exists():
+        _set_status(db, post, "failed", f"Video file not found on server: {post.clean_video_path or post.video_path}")
         return False
+    video_path = str(video_p)
 
     try:
         video_id = _do_upload(yt, post, video_path)

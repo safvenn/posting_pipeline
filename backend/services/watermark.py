@@ -130,13 +130,33 @@ def cancel_cleaning_job(post_id: int) -> None:
 # Main removal pipeline                                                         #
 # --------------------------------------------------------------------------- #
 
-def remove_watermark(post_id: int) -> None:
+def resolve_video_path(path_str: Optional[str], is_clean: bool = False) -> Optional[Path]:
+    """Resolve video path across Windows/Linux path formats and storage mount directories."""
+    if not path_str:
+        return None
+    normalized = str(path_str).replace("\\", "/")
+    p = Path(normalized)
+    if p.exists():
+        return p
+    # Fallback to current upload/processed directory by filename
+    base_dir = settings.processed_path() if is_clean else settings.upload_path()
+    fallback = base_dir / p.name
+    if fallback.exists():
+        return fallback
+    return p
+
+
+def remove_watermark(db: Session, post_id: int) -> None:
     """
-    Full gwr watermark removal pipeline.
-    Status: queued -> cleaning -> cleaned (or -> failed)
-    Runs in a background thread per post.
+    Orchestrate full watermark removal pipeline for post_id:
+      1. Connect SSH + SFTP
+      2. Upload local input -> remote ~/video-worker/tmp/input-<job_id>.mp4
+      3. Run gwr CLI on worker
+      4. Poll status until complete / timeout
+      5. Download remote clean video -> local processed/clean-<job_id>.mp4
+      6. Cleanup remote tmp files
+      7. Update post: clean_video_path, status='cleaned'
     """
-    db = SessionLocal()
     ssh: paramiko.SSHClient | None = None
     local_clean_path: Path | None = None
     job_id = f"{post_id}-{uuid.uuid4().hex[:8]}"
@@ -161,9 +181,12 @@ def remove_watermark(post_id: int) -> None:
                 "WORKER_SSH_HOST not configured. Set it in .env before using gwr removal."
             )
 
-        input_path = Path(post.video_path)
-        if not input_path.exists():
-            _set_status(db, post, "failed", f"Input file not found: {input_path}")
+        input_path = resolve_video_path(post.video_path, is_clean=False)
+        if not input_path or not input_path.exists():
+            _set_status(
+                db, post, "failed",
+                f"Input file not found on server disk: {post.video_path}. Please re-upload the video on this server."
+            )
             return
 
         local_clean_path = settings.processed_path() / f"clean-{job_id}.mp4"
