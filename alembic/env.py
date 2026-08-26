@@ -21,6 +21,8 @@ config = context.config
 db_url = settings.database_url
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
+elif db_url.startswith("mysql://"):
+    db_url = db_url.replace("mysql://", "mysql+pymysql://", 1)
 config.set_main_option("sqlalchemy.url", db_url)
 
 if config.config_file_name is not None:
