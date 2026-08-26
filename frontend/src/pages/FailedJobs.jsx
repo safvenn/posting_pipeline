@@ -7,11 +7,12 @@ import {
   Tv2,
   Clock,
   Layers,
+  Trash2,
   ChevronRight,
   CheckCircle2,
 } from 'lucide-react'
 import StatusBadge from '../components/StatusBadge'
-import { getPosts, retryPost } from '../api/posts'
+import { getPosts, retryPost, clearFailedPosts } from '../api/posts'
 import { parseUTCDate } from '../utils/timeFormat'
 
 function fmtTime(isoStr) {
@@ -59,6 +60,19 @@ export default function FailedJobs() {
     }
   }
 
+  async function handleClearAll() {
+    if (!confirm('Are you sure you want to delete all failed jobs?')) return
+    setLoading(true)
+    try {
+      await clearFailedPosts()
+      setPosts([])
+    } catch (err) {
+      alert(`Clear failed: ${err.response?.data?.detail || err}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div>
       {/* Header */}
@@ -73,10 +87,18 @@ export default function FailedJobs() {
           </div>
         </div>
 
-        <button className="btn btn-secondary" onClick={load} disabled={loading} id="failed-refresh">
-          <RefreshCw size={14} className={loading ? 'spinner' : ''} />
-          <span>Refresh</span>
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {posts.length > 0 && (
+            <button className="btn btn-danger" onClick={handleClearAll} disabled={loading} id="failed-clear-all">
+              <Trash2 size={14} />
+              <span>Clear All Failed</span>
+            </button>
+          )}
+          <button className="btn btn-secondary" onClick={load} disabled={loading} id="failed-refresh">
+            <RefreshCw size={14} className={loading ? 'spinner' : ''} />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       {loading && (

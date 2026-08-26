@@ -224,6 +224,25 @@ def get_post(post_id: int, db: Session = Depends(get_db)):
     return _to_post_read(post, name_map)
 
 
+@router.delete("/failed/clear", status_code=200)
+def clear_failed_posts(db: Session = Depends(get_db)):
+    """Bulk delete all failed posts and clean up any lingering local files."""
+    failed_posts = db.query(Post).filter(Post.status == "failed").all()
+    count = len(failed_posts)
+    for p in failed_posts:
+        for path_attr in ("video_path", "clean_video_path"):
+            path_val = getattr(p, path_attr, None)
+            if path_val:
+                try:
+                    Path(path_val).unlink(missing_ok=True)
+                except Exception:
+                    pass
+        db.delete(p)
+    db.commit()
+    logger.info("Cleared %s failed posts from database", count)
+    return {"message": f"Cleared {count} failed posts", "count": count}
+
+
 @router.delete("/{post_id}", status_code=204)
 def delete_post(post_id: int, db: Session = Depends(get_db)):
     post = db.get(Post, post_id)

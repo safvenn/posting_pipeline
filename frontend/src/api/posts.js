@@ -12,8 +12,12 @@ export const deletePost = (id) =>
 export const retryPost = (id) =>
   client.post(`/posts/${id}/retry`).then(r => r.data)
 
+export const clearFailedPosts = () =>
+  client.delete('/posts/failed/clear').then(r => r.data)
+
 export const uploadPost = (formData) =>
   client.post('/posts', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 120000,
   }).then(r => r.data)
+
