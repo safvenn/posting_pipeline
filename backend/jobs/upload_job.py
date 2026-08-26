@@ -109,16 +109,34 @@ def _schedule_single_post(post: Post, db) -> bool:
     """Enrich and schedule a single cleaned post. Returns True on success."""
     result = _gemini_enrich_and_schedule(post.channel, post, db)
     if not result:
-        return False
-
-    # Authoritative deterministic slot calculation
-    from backend.services.scheduler_logic import pick_next_slot
-    try:
-        scheduled_at = pick_next_slot(post.channel, db)
-    except Exception as exc:
-        logger.error("Could not pick next slot for post %s (channel %s): %s", post.id, post.channel, exc)
-        _set_status(db, post, "failed", f"Scheduling error: {exc}")
-        return False
+        logger.warning("Gemini enrichment returned no result, using rule-based scheduler for post %s", post.id)
+        from backend.services._enrichment_rules import enrich_post as rule_enrich
+        from backend.services.scheduler_logic import pick_next_slot
+        sub_count = _get_subscriber_count(post.channel)
+        enriched = rule_enrich(post.channel, post.title or "", post.description or "", post.tags or "", sub_count)
+        try:
+            scheduled_at = pick_next_slot(post.channel, db)
+        except Exception as exc:
+            logger.error("Could not pick next slot for post %s (channel %s): %s", post.id, post.channel, exc)
+            _set_status(db, post, "failed", f"Scheduling error: {exc}")
+            return False
+        result = {
+            "id": post.sheet_row_id,
+            "title": enriched.get("enriched_title") or post.title,
+            "description": enriched.get("enriched_description") or post.description,
+            "tags": [t.strip() for t in (enriched.get("enriched_tags") or "").split(";") if t.strip()],
+            "firstComment": enriched.get("first_comment_text") or "",
+            "date": scheduled_at.strftime("%Y-%m-%dT%H:%M:%S+05:30"),
+        }
+    else:
+        # Authoritative deterministic slot calculation
+        from backend.services.scheduler_logic import pick_next_slot
+        try:
+            scheduled_at = pick_next_slot(post.channel, db)
+        except Exception as exc:
+            logger.error("Could not pick next slot for post %s (channel %s): %s", post.id, post.channel, exc)
+            _set_status(db, post, "failed", f"Scheduling error: {exc}")
+            return False
 
     # Ensure result date reflects the exact scheduled slot for sheet writeback
     result["date"] = scheduled_at.strftime("%Y-%m-%dT%H:%M:%S+05:30")

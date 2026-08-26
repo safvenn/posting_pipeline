@@ -318,12 +318,19 @@ def enrich_post_gemini(
     result = _parse_gemini_json(raw)
 
     # Validate required fields
-    if result.get("id") is None:
+    if result.get("id") is None and not target_post and not target_row_id:
         logger.info("Channel %s: Gemini returned no unscheduled row", channel)
         return None
 
+    if result.get("id") is None and target_post:
+        result["id"] = getattr(target_post, "sheet_row_id", None)
+
     if not result.get("date"):
-        raise ValueError(f"Gemini returned no date for channel {channel}: {result}")
+        from backend.services.scheduler_logic import pick_next_slot
+        from backend.database import SessionLocal
+        with SessionLocal() as db_session:
+            slot = pick_next_slot(channel, db_session)
+        result["date"] = slot.strftime("%Y-%m-%dT%H:%M:%S+05:30")
 
     # Enforce +05:30 suffix (safety net from n8n prompt rule)
     date_str = result["date"]
