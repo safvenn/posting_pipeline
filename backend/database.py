@@ -6,14 +6,18 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from backend.config import settings
 
-is_sqlite = settings.database_url.startswith("sqlite")
+db_url = settings.database_url
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+is_sqlite = db_url.startswith("sqlite")
 connect_args = {"check_same_thread": False} if is_sqlite else {}
 engine_kwargs = {"connect_args": connect_args}
 if not is_sqlite:
     engine_kwargs.update({"pool_pre_ping": True, "pool_size": 10, "max_overflow": 20})
 
 engine = create_engine(
-    settings.database_url,
+    db_url,
     **engine_kwargs,
 )
 

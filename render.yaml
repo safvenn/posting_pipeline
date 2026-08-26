@@ -1,0 +1,58 @@
+services:
+  # ---------------------------------------------------------------------------
+  # FastAPI Backend Web Service
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: posting-pipeline-backend
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: pipeline-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: TIMEZONE
+        value: Asia/Kolkata
+      - key: DATABASE_URL
+        fromDatabase:
+          name: posting-pipeline-db
+          property: connectionString
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: PROCESSED_DIR
+        value: /var/data/processed
+      - key: LOG_DIR
+        value: /var/data/logs
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: WORKER_SSH_HOST
+        sync: false
+      - key: WORKER_SSH_PORT
+        value: "22"
+      - key: WORKER_SSH_USER
+        value: ubuntu
+      - key: WORKER_SSH_PASSWORD
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+
+# -----------------------------------------------------------------------------
+# Managed PostgreSQL Database
+# -----------------------------------------------------------------------------
+databases:
+  - name: posting-pipeline-db
+    databaseName: posting_pipeline
+    user: posting_user
+    region: oregon
+    plan: free

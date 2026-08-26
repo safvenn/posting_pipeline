@@ -40,7 +40,13 @@ class GoogleSheetsAdapter:
 
     def _get_worksheet(self) -> gspread.Worksheet:
         """Authenticate and return the worksheet."""
-        creds = Credentials.from_service_account_file(self._sa_json, scopes=SCOPES)
+        sa_val = self._sa_json.strip()
+        if sa_val.startswith("{"):
+            import json
+            info = json.loads(sa_val)
+            creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        else:
+            creds = Credentials.from_service_account_file(sa_val, scopes=SCOPES)
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(self._sheet_id)
         return sh.worksheet(self._tab_name)
