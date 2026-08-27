@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Upload as UploadIcon,
   FileVideo,
@@ -17,10 +17,15 @@ import client, { formatErrorMessage } from '../api/client'
 
 export default function Upload() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const queryVideoUrl = searchParams.get('video_url')
+  const queryTitle = searchParams.get('title')
+
   const fileRef = useRef(null)
   const videoRef = useRef(null)
   const [file, setFile] = useState(null)
   const [videoUrl, setVideoUrl] = useState(null)
+  const [remoteVideoUrl, setRemoteVideoUrl] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const [channel, setChannel] = useState('')
   const [sheetRowId, setSheetRowId] = useState('')
@@ -39,6 +44,32 @@ export default function Upload() {
   const [videoReady, setVideoReady] = useState(false)
 
   const [channelsList, setChannelsList] = useState([])
+
+  // Load from query params if opened from extension / Google Flow
+  useEffect(() => {
+    if (queryVideoUrl) {
+      const decodedUrl = decodeURIComponent(queryVideoUrl)
+      setRemoteVideoUrl(decodedUrl)
+      setVideoUrl(decodedUrl)
+      if (queryTitle) {
+        setCustomTitle(decodeURIComponent(queryTitle))
+      }
+
+      // Attempt to download blob directly for standard multipart submission
+      fetch(decodedUrl)
+        .then(res => {
+          if (!res.ok) throw new Error('CORS or network error')
+          return res.blob()
+        })
+        .then(blob => {
+          const f = new File([blob], 'flow_video.mp4', { type: blob.type || 'video/mp4' })
+          setFile(f)
+        })
+        .catch(() => {
+          // Direct blob fetch blocked by CORS, will use remote URL ingest
+        })
+    }
+  }, [queryVideoUrl, queryTitle])
 
   useEffect(() => {
     client.get('/channels')
@@ -147,7 +178,7 @@ export default function Upload() {
 
   async function handleSubmit(e) {
     e.preventDefault()
-    if (!file) {
+    if (!file && !videoUrl && !remoteVideoUrl) {
       setError('Please select a video file to upload.')
       return
     }
@@ -157,45 +188,70 @@ export default function Upload() {
     setUploadPercent(0)
     setProgress('Uploading video to server...')
 
-    const fd = new FormData()
-    fd.append('video', file)
-    fd.append('channel', channel)
-    if (sheetRowId && String(sheetRowId).trim()) {
-      fd.append('sheet_row_id', String(sheetRowId).trim())
-    }
-    if (customTitle.trim()) {
-      fd.append('title', customTitle.trim())
-    }
-    if (customDescription.trim()) {
-      fd.append('description', customDescription.trim())
-    }
-    if (customTags.trim()) {
-      fd.append('tags', customTags.trim())
-    }
+    if (file) {
+      const fd = new FormData()
+      fd.append('video', file)
+      fd.append('channel', channel)
+      if (sheetRowId && String(sheetRowId).trim()) {
+        fd.append('sheet_row_id', String(sheetRowId).trim())
+      }
+      if (customTitle.trim()) {
+        fd.append('title', customTitle.trim())
+      }
+      if (customDescription.trim()) {
+        fd.append('description', customDescription.trim())
+      }
+      if (customTags.trim()) {
+        fd.append('tags', customTags.trim())
+      }
 
-    try {
-      const res = await client.post('/posts', fd, {
-        onUploadProgress: (progressEvent) => {
-          if (progressEvent.total) {
-            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-            setUploadPercent(percentCompleted)
-            if (percentCompleted < 100) {
-              setProgress(`Uploading: ${percentCompleted}% (${fmtSize(progressEvent.loaded)} of ${fmtSize(progressEvent.total)})`)
-            } else {
-              setProgress('Upload completed. Initializing pipeline...')
+      try {
+        const res = await client.post('/posts', fd, {
+          onUploadProgress: (progressEvent) => {
+            if (progressEvent.total) {
+              const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+              setUploadPercent(percentCompleted)
+              if (percentCompleted < 100) {
+                setProgress(`Uploading: ${percentCompleted}% (${fmtSize(progressEvent.loaded)} of ${fmtSize(progressEvent.total)})`)
+              } else {
+                setProgress('Upload completed. Initializing pipeline...')
+              }
             }
-          }
-        },
-      })
-      setProgress('Video ingested! Redirecting to post detail...')
-      setTimeout(() => {
-        navigate(`/post/${res.data.id}`)
-      }, 600)
-    } catch (err) {
-      setError(formatErrorMessage(err))
-      setProgress('')
-      setUploadPercent(null)
-      setLoading(false)
+          },
+        })
+        setProgress('Video ingested! Redirecting to post detail...')
+        setTimeout(() => {
+          navigate(`/post/${res.data.id}`)
+        }, 600)
+      } catch (err) {
+        setError(formatErrorMessage(err))
+        setProgress('')
+        setUploadPercent(null)
+        setLoading(false)
+      }
+    } else {
+      // Remote video URL ingest
+      try {
+        setProgress('Ingesting video from Google Flow to pipeline...')
+        const targetUrl = remoteVideoUrl || videoUrl
+        const res = await client.post('/extension/ingest', {
+          video_url: targetUrl,
+          title: customTitle.trim() || 'Google Flow Video',
+          channel: channel,
+          description: customDescription.trim() || '',
+          tags: customTags.trim() || '',
+          sheet_row_id: sheetRowId ? String(sheetRowId).trim() : null,
+        })
+        setProgress('Video ingested! Redirecting to post detail...')
+        setTimeout(() => {
+          navigate(`/post/${res.data.post_id}`)
+        }, 600)
+      } catch (err) {
+        setError(formatErrorMessage(err))
+        setProgress('')
+        setUploadPercent(null)
+        setLoading(false)
+      }
     }
   }
 
@@ -227,19 +283,19 @@ export default function Upload() {
             backgroundColor: 'var(--bg-card)',
             border: `2px dashed ${dragOver ? 'var(--accent-primary)' : 'var(--border-medium)'}`,
             borderRadius: 12,
-            padding: file ? 16 : '48px 24px',
+            padding: (file || videoUrl) ? 16 : '48px 24px',
             textAlign: 'center',
-            cursor: file ? 'default' : 'pointer',
+            cursor: (file || videoUrl) ? 'default' : 'pointer',
             transition: 'all var(--transition-fast)',
             marginBottom: 20,
           }}
           onDragOver={e => { e.preventDefault(); setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
-          onClick={() => !file && fileRef.current?.click()}
+          onClick={() => !file && !videoUrl && fileRef.current?.click()}
           id="video-dropzone"
         >
-          {file && videoUrl ? (
+          {(file || videoUrl) ? (
             <div>
               <div style={{ borderRadius: 8, overflow: 'hidden', backgroundColor: '#000', marginBottom: 12 }}>
                 <video
@@ -270,10 +326,11 @@ export default function Upload() {
                   <FileVideo size={20} color="var(--accent-primary)" />
                   <div style={{ minWidth: 0 }}>
                     <div style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: 13 }} className="truncate-text">
-                      {file.name}
+                      {file ? file.name : (customTitle || 'Google Flow Video')}
                     </div>
                     <div style={{ color: 'var(--text-muted)', fontSize: 11, display: 'flex', gap: 8, marginTop: 2 }}>
-                      <span>{fmtSize(file.size)}</span>
+                      {file && <span>{fmtSize(file.size)}</span>}
+                      {remoteVideoUrl && !file && <span style={{ color: 'var(--info)' }}>Google Flow Cloud Video</span>}
                       {videoDuration && <span>• {fmtDuration(videoDuration)}</span>}
                     </div>
                   </div>
@@ -281,7 +338,7 @@ export default function Upload() {
 
                 <button
                   type="button"
-                  onClick={e => { e.stopPropagation(); setFile(null) }}
+                  onClick={e => { e.stopPropagation(); setFile(null); setVideoUrl(null); setRemoteVideoUrl(''); }}
                   className="btn btn-ghost btn-sm btn-icon"
                   title="Remove video"
                 >
