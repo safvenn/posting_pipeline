@@ -272,6 +272,10 @@ export default function ChannelStats() {
     instagram_username: '',
   })
   const [submitting, setSubmitting] = useState(false)
+  const [availableSheets, setAvailableSheets] = useState([])
+  const [availableTabs, setAvailableTabs] = useState([])
+  const [loadingSheets, setLoadingSheets] = useState(false)
+  const [loadingTabs, setLoadingTabs] = useState(false)
 
   function load() {
     setLoading(true)
@@ -324,7 +328,37 @@ export default function ChannelStats() {
       instagram_username: ch.instagram_username || '',
     })
     setShowEditModal(true)
+    fetchSheets()
+    if (ch.sheet_id) {
+      fetchTabs(ch.sheet_id)
+    }
   }
+
+  function fetchSheets() {
+    setLoadingSheets(true)
+    client.get('/channels/google-sheets')
+      .then(res => setAvailableSheets(res.data.spreadsheets || []))
+      .catch(err => console.error('Failed to load sheets:', err))
+      .finally(() => setLoadingSheets(false))
+  }
+
+  function fetchTabs(sheetId) {
+    if (!sheetId) return
+    setLoadingTabs(true)
+    client.get(`/channels/google-sheets?sheet_id=${sheetId}`)
+      .then(res => setAvailableTabs(res.data.tabs || []))
+      .catch(err => console.error('Failed to load tabs:', err))
+      .finally(() => setLoadingTabs(false))
+  }
+
+  // When sheet_id changes, fetch tabs for the new sheet
+  useEffect(() => {
+    if (showEditModal && form.sheet_id) {
+      fetchTabs(form.sheet_id)
+    } else {
+      setAvailableTabs([])
+    }
+  }, [form.sheet_id, showEditModal])
 
   async function handleTestInstagram() {
     if (!form.instagram_access_token && !form.instagram_account_id) {
@@ -577,26 +611,44 @@ export default function ChannelStats() {
 
               {/* Google Sheets Sync */}
               <div className="form-group">
-                <label className="form-label">Google Sheet ID</label>
-                <input
-                  className="form-input"
-                  placeholder="e.g. 15di4I6FImBRN0EqXpC1azZT1BVIeTEYjRFiaMPsZOPw"
-                  value={form.sheet_id}
-                  onChange={e => setForm({ ...form, sheet_id: e.target.value })}
-                />
-                <div className="form-hint">
-                  Found in your Google Sheet URL: docs.google.com/spreadsheets/d/<b>ID</b>/edit
+                <label className="form-label">Google Sheet</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <select
+                    className="form-input"
+                    value={form.sheet_id}
+                    onChange={e => setForm({ ...form, sheet_id: e.target.value, sheet_tab: '' })}
+                    disabled={loadingSheets}
+                  >
+                    <option value="">{loadingSheets ? 'Loading sheets...' : '-- Select a Google Sheet --'}</option>
+                    {availableSheets.map(s => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                  {loadingSheets && <RefreshCw size={14} className="spinner" />}
                 </div>
+                {!availableSheets.length && !loadingSheets && (
+                  <div className="form-hint" style={{ color: 'var(--warning)' }}>
+                    No sheets found. Ensure you have shared your Google Sheet with the service account email.
+                  </div>
+                )}
               </div>
 
               <div className="form-group">
                 <label className="form-label">Sheet Tab Name</label>
-                <input
-                  className="form-input"
-                  placeholder="e.g. Sheet1 or asmr_prompts"
-                  value={form.sheet_tab}
-                  onChange={e => setForm({ ...form, sheet_tab: e.target.value })}
-                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <select
+                    className="form-input"
+                    value={form.sheet_tab}
+                    onChange={e => setForm({ ...form, sheet_tab: e.target.value })}
+                    disabled={!form.sheet_id || loadingTabs}
+                  >
+                    <option value="">{loadingTabs ? 'Loading tabs...' : '-- Select a Tab --'}</option>
+                    {availableTabs.map(t => (
+                      <option key={t.id} value={t.name}>{t.name}</option>
+                    ))}
+                  </select>
+                  {loadingTabs && <RefreshCw size={14} className="spinner" />}
+                </div>
               </div>
 
               <div className="form-group">

@@ -6,21 +6,24 @@ import uuid
 from typing import List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
+import uuid
 
-from backend.config import settings
 from backend.database import get_db
 from backend.models import ChannelConfig
+from backend.services.channels import get_youtube_client, get_auth_url, exchange_code, revoke_token
 from backend.schemas import (
     ChannelCreate,
-    ChannelStats,
     ChannelUpdate,
+    ChannelStats,
+    ChannelDetailedStats,
     InstagramTestRequest,
     InstagramTestResponse,
 )
-from backend.services.youtube_auth import get_youtube_client
+from backend.config import settings
+from backend.services.sheets import _gc
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +311,31 @@ def delete_channel(channel: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"Channel {channel} not found")
     db.delete(cfg)
     db.commit()
+
+
+@router.get("/google-sheets")
+def list_google_sheets(sheet_id: Optional[str] = None):
+    """
+    List all spreadsheets accessible to the service account, 
+    or list tabs if a specific sheet_id is provided.
+    """
+    try:
+        client = _gc()
+        if not sheet_id:
+            # List all spreadsheets
+            sheets = client.list_spreadsheet_files()
+            return {"spreadsheets": [{"id": s["id"], "name": s["name"]} for s in sheets]}
+        else:
+            # List tabs within a spreadsheet
+            sh = client.open_by_key(sheet_id)
+            worksheets = sh.worksheets()
+            return {"tabs": [{"id": str(ws.id), "name": ws.title} for ws in worksheets]}
+    except Exception as exc:
+        logger.error(f"Error fetching Google Sheets info: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch Google Sheets: {str(exc)}"
+        )
 
 
 @router.get("/{channel}", response_model=ChannelStats)
