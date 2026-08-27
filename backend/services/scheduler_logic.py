@@ -40,8 +40,8 @@ SLOTS = [
     ("B", 18, 30),   # 06:30 PM IST (Prime evening peak)
 ]
 
-SLOT_WINDOW_MINUTES = 45      # a slot "owns" 45 minutes
-MIN_GAP_HOURS = 5.0           # anti-clustering rule (6.0 hours separation between Slot A and Slot B)
+SLOT_WINDOW_MINUTES = 60      # a slot "owns" 60 minutes
+MIN_GAP_HOURS = 4.5           # anti-clustering rule (4.5 hours separation between posts)
 MAX_SEARCH_DAYS = 14          # give up after this many days
 
 
@@ -77,7 +77,7 @@ def _get_channel_video_count(channel: str) -> int:
 
 def _get_recent_publish_times_youtube(channel: str) -> list[datetime]:
     """
-    Fetch publish times of recent YouTube uploads for anti-clustering check.
+    Fetch publish times of recent YouTube uploads AND upcoming scheduled videos on YouTube.
     Returns IST-aware datetimes. Returns [] on any error (fail open — DB check still runs).
     """
     times: list[datetime] = []
@@ -98,14 +98,48 @@ def _get_recent_publish_times_youtube(channel: str) -> list[datetime]:
 
         pl_resp = (
             yt.playlistItems()
-            .list(part="snippet", playlistId=playlist_id, maxResults=50)
+            .list(part="snippet,contentDetails", playlistId=playlist_id, maxResults=50)
             .execute()
         )
-        for item in pl_resp.get("items", []):
-            pub = item.get("snippet", {}).get("publishedAt", "")
-            if pub:
-                dt = datetime.fromisoformat(pub.replace("Z", "+00:00")).astimezone(IST)
-                times.append(dt)
+        video_ids = [
+            item.get("contentDetails", {}).get("videoId")
+            for item in pl_resp.get("items", [])
+            if item.get("contentDetails", {}).get("videoId")
+        ]
+
+        if video_ids:
+            # Batch fetch video status & snippet (status contains publishAt for future scheduled videos)
+            v_resp = yt.videos().list(part="snippet,status", id=",".join(video_ids[:50])).execute()
+            for v in v_resp.get("items", []):
+                status_obj = v.get("status", {})
+                snippet_obj = v.get("snippet", {})
+
+                # 1. Future scheduled publishAt time
+                pub_at_str = status_obj.get("publishAt")
+                if pub_at_str:
+                    try:
+                        dt = datetime.fromisoformat(pub_at_str.replace("Z", "+00:00")).astimezone(IST)
+                        times.append(dt)
+                    except Exception:
+                        pass
+
+                # 2. Already published timestamp
+                published_at_str = snippet_obj.get("publishedAt")
+                if published_at_str:
+                    try:
+                        dt = datetime.fromisoformat(published_at_str.replace("Z", "+00:00")).astimezone(IST)
+                        times.append(dt)
+                    except Exception:
+                        pass
+        else:
+            for item in pl_resp.get("items", []):
+                pub = item.get("snippet", {}).get("publishedAt", "")
+                if pub:
+                    try:
+                        dt = datetime.fromisoformat(pub.replace("Z", "+00:00")).astimezone(IST)
+                        times.append(dt)
+                    except Exception:
+                        pass
     except HttpError as exc:
         if is_quota_error(exc):
             logger.warning("Quota error fetching YouTube publish times for %s", channel)
@@ -118,10 +152,23 @@ def _get_recent_publish_times_youtube(channel: str) -> list[datetime]:
 
 def _get_db_publish_times(channel: str, db: Session) -> list[datetime]:
     """Publish times of scheduled/uploaded posts for a channel from the DB, normalized to IST."""
+    from backend.models import ChannelConfig
+    channel_keys = {channel}
+    try:
+        cfg = db.query(ChannelConfig).filter(
+            (ChannelConfig.key == channel) | (ChannelConfig.display_name == channel)
+        ).first()
+        if cfg:
+            channel_keys.add(cfg.key)
+            if cfg.display_name:
+                channel_keys.add(cfg.display_name)
+    except Exception:
+        pass
+
     posts = (
         db.query(Post)
-        .filter(Post.channel == channel)
-        .filter(Post.status.in_(["scheduled", "uploaded", "commented"]))
+        .filter(Post.channel.in_(channel_keys))
+        .filter(Post.status != "failed")
         .filter(Post.scheduled_at.isnot(None))
         .all()
     )

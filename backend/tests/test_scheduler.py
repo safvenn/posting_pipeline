@@ -145,3 +145,44 @@ def test_early_growth_channel(monkeypatch):
 
     slot = sl.pick_next_slot("channel_a", db=MagicMock())
     assert slot > fake_now
+
+
+def test_today_filled_goes_to_tomorrow(monkeypatch):
+    import backend.services.scheduler_logic as sl
+
+    fake_now = _ist_at(8)
+    monkeypatch.setattr(sl, "_ist_now", lambda: fake_now)
+
+    # Both today Slot A (12:30) and Slot B (18:30) occupied
+    today_occupied = [
+        fake_now.replace(hour=12, minute=30, second=0),
+        fake_now.replace(hour=18, minute=30, second=0),
+    ]
+    monkeypatch.setattr(sl, "_get_db_publish_times", lambda ch, db: today_occupied)
+    monkeypatch.setattr(sl, "_get_recent_publish_times_youtube", lambda ch: [])
+
+    slot = sl.pick_next_slot("channel_a", db=MagicMock())
+    # Should move to tomorrow Slot A (12:30)
+    assert slot.date() == (fake_now.date() + timedelta(days=1))
+    assert (slot.hour, slot.minute) == (12, 30)
+
+
+def test_tomorrow_slot_a_filled_goes_to_tomorrow_slot_b(monkeypatch):
+    import backend.services.scheduler_logic as sl
+
+    fake_now = _ist_at(8)
+    monkeypatch.setattr(sl, "_ist_now", lambda: fake_now)
+
+    tomorrow_date = fake_now.date() + timedelta(days=1)
+    occupied = [
+        fake_now.replace(hour=12, minute=30, second=0),
+        fake_now.replace(hour=18, minute=30, second=0),
+        fake_now.replace(year=tomorrow_date.year, month=tomorrow_date.month, day=tomorrow_date.day, hour=12, minute=30, second=0),
+    ]
+    monkeypatch.setattr(sl, "_get_db_publish_times", lambda ch, db: occupied)
+    monkeypatch.setattr(sl, "_get_recent_publish_times_youtube", lambda ch: [])
+
+    slot = sl.pick_next_slot("channel_a", db=MagicMock())
+    # Should move to tomorrow Slot B (18:30)
+    assert slot.date() == tomorrow_date
+    assert (slot.hour, slot.minute) == (18, 30)
