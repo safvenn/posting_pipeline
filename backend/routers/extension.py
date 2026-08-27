@@ -30,6 +30,7 @@ class ExtensionIngestRequest(BaseModel):
     channel: str
     description: Optional[str] = ""
     tags: Optional[str] = ""
+    sheet_row_id: Optional[str] = None   # Google Sheet row to bind
     scheduled_at: Optional[str] = None   # ISO-8601 string or None
 
 
@@ -132,6 +133,7 @@ async def ingest_from_extension(body: ExtensionIngestRequest):
             video_path=str(dest),
             status="queued",
             scheduled_at=scheduled_at,
+            sheet_row_id=body.sheet_row_id or None,
         )
         db.add(post)
         db.commit()
