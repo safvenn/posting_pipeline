@@ -9,4 +9,7 @@ export const rescheduleSlot = (data) =>
 export const clearFailedSchedules = () =>
   client.post('/schedule/clear-failed').then(r => r.data)
 
+export const deleteScheduledVideo = (data) =>
+  client.post('/schedule/delete', data).then(r => r.data)
+
 

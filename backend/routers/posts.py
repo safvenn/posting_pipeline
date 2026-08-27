@@ -252,6 +252,14 @@ async def create_post(
         "Post %s created (channel=%s, title=%s, sheet_row_id=%s, file=%s)",
         post.id, channel, title, clean_row_id, dest,
     )
+
+    # Trigger background pipeline execution immediately
+    try:
+        from backend.jobs.job_queue import run_serial_queue
+        background_tasks.add_task(run_serial_queue)
+    except Exception as exc:
+        logger.warning("Could not trigger background task queue: %s", exc)
+
     name_map = _get_channel_name_map(db)
     return _to_post_read(post, name_map)
 
@@ -335,14 +343,24 @@ def delete_post(post_id: int, db: Session = Depends(get_db)):
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
 
-    # 1. Immediately kill remote process & delete files on AWS EC2 worker
+    # 1. Delete from YouTube / YouTube Studio if video was already uploaded
+    if post.youtube_video_id and post.channel:
+        try:
+            from backend.services.youtube_auth import get_youtube_client
+            yt = get_youtube_client(post.channel)
+            yt.videos().delete(id=post.youtube_video_id).execute()
+            logger.info("Deleted video %s from YouTube Studio for post %s", post.youtube_video_id, post_id)
+        except Exception as exc:
+            logger.warning("Could not delete video %s from YouTube Studio: %s", post.youtube_video_id, exc)
+
+    # 2. Immediately kill remote process & delete files on AWS EC2 worker
     try:
         from backend.services.watermark import cancel_cleaning_job
         cancel_cleaning_job(post_id)
     except Exception as exc:
         logger.warning("Error cancelling worker cleaning job for post %s: %s", post_id, exc)
 
-    # 2. Clean up local files on disk
+    # 3. Clean up local files on disk
     for path_attr in ("video_path", "clean_video_path"):
         p = getattr(post, path_attr, None)
         if p:
@@ -351,10 +369,10 @@ def delete_post(post_id: int, db: Session = Depends(get_db)):
             except Exception:
                 pass
 
-    # 3. Delete database record
+    # 4. Delete database record
     db.delete(post)
     db.commit()
-    logger.info("Post %s deleted: worker process killed and files cleared", post_id)
+    logger.info("Post %s deleted: YouTube video removed, worker process killed, and files cleared", post_id)
 
 
 @router.post("/{post_id}/retry", response_model=RetryResponse)

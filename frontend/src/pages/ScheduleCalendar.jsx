@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import InstagramIcon from '../components/InstagramIcon'
 import StatusBadge from '../components/StatusBadge'
-import { getSchedule, rescheduleSlot, clearFailedSchedules } from '../api/schedule'
+import { getSchedule, rescheduleSlot, clearFailedSchedules, deleteScheduledVideo } from '../api/schedule'
 import { getChannels } from '../api/channels'
 import { parseUTCDate } from '../utils/timeFormat'
 
@@ -153,6 +153,29 @@ export default function ScheduleCalendar() {
       load()
     } catch (err) {
       showNotification('error', 'Failed to clear failed schedules')
+    }
+  }
+
+  async function handleDeleteScheduled(item) {
+    if (!item) return
+    const title = item.post_title || 'this video'
+    const confirmMsg = `Are you sure you want to delete "${title}"?\n\n⚠️ This will permanently delete the scheduled video from YouTube Studio and your database, freeing up this time slot.`
+    if (!window.confirm(confirmMsg)) return
+
+    try {
+      setLoading(true)
+      const res = await deleteScheduledVideo({
+        post_id: item.post_id,
+        youtube_video_id: item.youtube_video_id,
+        channel: item.channel,
+      })
+      showNotification('success', res.message || 'Scheduled video deleted successfully.')
+      load()
+    } catch (err) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to delete scheduled video.'
+      showNotification('error', msg)
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -455,6 +478,21 @@ export default function ScheduleCalendar() {
                                         <ExternalLink size={12} color={isPosted ? 'var(--success, #22c55e)' : 'var(--accent-primary)'} />
                                       </a>
                                     )}
+
+                                    {(s.post_id || s.youtube_video_id) && (
+                                      <button
+                                        type="button"
+                                        className="btn btn-ghost btn-xs btn-icon"
+                                        title="Delete from YouTube Studio & Pipeline"
+                                        style={{ height: 20, width: 20, padding: 0, color: 'var(--error, #ef4444)' }}
+                                        onClick={e => {
+                                          e.stopPropagation()
+                                          handleDeleteScheduled(s)
+                                        }}
+                                      >
+                                        <Trash2 size={12} color="var(--error, #ef4444)" />
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
 
@@ -689,6 +727,22 @@ export default function ScheduleCalendar() {
                                               <ExternalLink size={12} color="#f59e0b" />
                                             </a>
                                           )}
+
+                                          {(item.post_id || item.youtube_video_id) && (
+                                            <button
+                                              type="button"
+                                              className="btn btn-ghost btn-xs btn-icon"
+                                              title="Delete from YouTube Studio & Pipeline"
+                                              style={{ height: 20, width: 20, padding: 0, color: 'var(--error, #ef4444)' }}
+                                              onClick={e => {
+                                                e.stopPropagation()
+                                                handleDeleteScheduled(item)
+                                              }}
+                                            >
+                                              <Trash2 size={12} color="var(--error, #ef4444)" />
+                                            </button>
+                                          )}
+
                                           {!isItemPosted && (
                                             <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
                                               Drag to Slot A/B

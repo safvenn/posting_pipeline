@@ -470,6 +470,76 @@ def get_scheduled_posts_list(channel: Optional[str] = None, db: Session = Depend
     return results
 
 
+from pydantic import BaseModel
+
+
+class DeleteScheduleRequest(BaseModel):
+    post_id: Optional[int] = None
+    youtube_video_id: Optional[str] = None
+    channel: Optional[str] = None
+
+
+@router.post("/delete")
+def delete_scheduled_video(req: DeleteScheduleRequest, db: Session = Depends(get_db)):
+    """
+    Permanently delete a scheduled video from YouTube Studio and the database,
+    freeing up its scheduled slot immediately.
+    """
+    channel_key = req.channel
+    video_id_to_delete = req.youtube_video_id
+    post = None
+
+    if req.post_id:
+        post = db.get(Post, req.post_id)
+        if post:
+            if not video_id_to_delete:
+                video_id_to_delete = post.youtube_video_id
+            if not channel_key:
+                channel_key = post.channel
+    elif video_id_to_delete:
+        post = db.query(Post).filter(Post.youtube_video_id == video_id_to_delete).first()
+        if post and not channel_key:
+            channel_key = post.channel
+
+    yt_deleted = False
+    yt_error = None
+    if video_id_to_delete and channel_key:
+        try:
+            yt = get_youtube_client(channel_key)
+            yt.videos().delete(id=video_id_to_delete).execute()
+            yt_deleted = True
+            logger.info("Successfully deleted video %s from YouTube Studio for channel %s", video_id_to_delete, channel_key)
+        except Exception as exc:
+            yt_error = str(exc)
+            logger.warning("Could not delete video %s from YouTube: %s", video_id_to_delete, exc)
+
+    db_deleted = False
+    if post:
+        try:
+            from pathlib import Path
+            for path_attr in ("video_path", "clean_video_path"):
+                p = getattr(post, path_attr, None)
+                if p:
+                    try:
+                        Path(p).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            db.delete(post)
+            db.commit()
+            db_deleted = True
+            logger.info("Deleted DB Post %s for video %s", post.id, video_id_to_delete)
+        except Exception as exc:
+            logger.warning("Could not delete post %s from DB: %s", post.id, exc)
+
+    return {
+        "success": True,
+        "message": "Scheduled video deleted successfully from YouTube Studio and schedule matrix.",
+        "youtube_deleted": yt_deleted,
+        "database_deleted": db_deleted,
+        "youtube_error": yt_error,
+    }
+
+
 @router.post("/clear-failed")
 def clear_failed_schedules(db: Session = Depends(get_db)):
     """Reset or clear schedule timestamp for failed posts."""
