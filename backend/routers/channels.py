@@ -18,7 +18,6 @@ from backend.schemas import (
     ChannelCreate,
     ChannelUpdate,
     ChannelStats,
-    ChannelDetailedStats,
     InstagramTestRequest,
     InstagramTestResponse,
 )
