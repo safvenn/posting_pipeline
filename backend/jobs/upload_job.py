@@ -197,6 +197,19 @@ def _upload_single_post(post: Post, db) -> bool:
         return False
     video_path = str(video_p)
 
+    # Enforce 1080p Full HD master quality before uploading to YouTube
+    try:
+        from backend.services.video_quality import enhance_to_1080p_hd
+        enhanced_path = enhance_to_1080p_hd(video_path)
+        if enhanced_path and os.path.exists(enhanced_path):
+            video_path = enhanced_path
+            if enhanced_path != str(video_p):
+                post.clean_video_path = enhanced_path
+                db.commit()
+                logger.info("Post %s: using 1080p Full HD video for upload: %s", post.id, enhanced_path)
+    except Exception as eq_exc:
+        logger.warning("Post %s: 1080p enhancement check error (using original): %s", post.id, eq_exc)
+
     try:
         video_id = _do_upload(yt, post, video_path)
         post.youtube_video_id = video_id
@@ -325,7 +338,7 @@ def _do_upload(yt, post: Post, video_path: str) -> str:
         "status": status_body,
     }
 
-    media = MediaFileUpload(video_path, mimetype="video/*", resumable=True, chunksize=10 * 1024 * 1024)
+    media = MediaFileUpload(video_path, mimetype="video/mp4", resumable=True, chunksize=10 * 1024 * 1024)
     request = yt.videos().insert(part="snippet,status", body=body, media_body=media)
     response = None
     while response is None:

@@ -303,8 +303,9 @@ def remove_watermark(post_id: int, db: Session | None = None) -> None:
         ffmpeg_1080p_cmd = (
             f'ffmpeg -y -i "{remote_clean}" '
             f'-vf "scale=\'if(gt(ih,iw),1080,-2)\':\'if(gt(ih,iw),-2,1080)\':flags=lanczos,format=yuv420p" '
-            f'-c:v libx264 -preset medium -crf 17 -b:v 25M -maxrate 35M -bufsize 50M '
-            f'-c:a aac -b:a 192k -movflags +faststart "{remote_1080p}"'
+            f'-c:v libx264 -preset medium -profile:v high -level:v 4.2 -crf 17 -b:v 25M -maxrate 35M -bufsize 50M '
+            f'-colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv '
+            f'-c:a aac -b:a 384k -ar 48000 -movflags +faststart "{remote_1080p}"'
         )
         logger.info("Post %s: enhancing video to 1080p Full HD quality on worker", post_id)
         ff_code, ff_out, ff_err = _ssh_exec(ssh, ffmpeg_1080p_cmd, timeout=600)

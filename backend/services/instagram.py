@@ -489,6 +489,15 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
 
     video_path = str(video_p) if video_p and video_p.exists() else (post.clean_video_path or post.video_path)
 
+    if video_path and os.path.exists(video_path):
+        try:
+            from backend.services.video_quality import enhance_to_1080p_hd
+            enhanced_path = enhance_to_1080p_hd(video_path)
+            if enhanced_path and os.path.exists(enhanced_path):
+                video_path = enhanced_path
+        except Exception:
+            pass
+
     # Determine video_url
     video_url = video_url_override or resolve_post_video_url(post)
 
