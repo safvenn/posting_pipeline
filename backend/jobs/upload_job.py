@@ -157,6 +157,22 @@ def _schedule_single_post(post: Post, db) -> bool:
     _set_status(db, post, "scheduled")
     logger.info("Post %s scheduled at %s (sheet_row_id=%s)", post.id, result["date"], post.sheet_row_id)
 
+    # Immediately write scheduled time to Google Sheet row
+    if post.sheet_row_id and result.get("date"):
+        try:
+            from backend.services.sheets import update_row_fields
+            update_row_fields(
+                channel=post.channel,
+                row_id=post.sheet_row_id,
+                fields={
+                    "scheduled": result["date"],
+                    "title": post.enriched_title or post.title,
+                },
+            )
+            logger.info("Updated Google Sheet row #%s with scheduled=%s for post %s", post.sheet_row_id, result["date"], post.id)
+        except Exception as sheet_err:
+            logger.warning("Could not update schedule time on sheet row %s: %s", post.sheet_row_id, sheet_err)
+
     # Cache Gemini result for sheet write-back after upload
     _gemini_result_cache[post.id] = result
     return True

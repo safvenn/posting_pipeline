@@ -184,6 +184,67 @@ def get_row_by_id(channel: str, row_id: int | str) -> Optional[dict]:
     return None
 
 
+def _find_column_index(headers: list[str], target_name: str) -> Optional[int]:
+    """Find 1-indexed column number for a field name supporting common aliases."""
+    normalized_target = re.sub(r"[_\s-]+", "", target_name.lower())
+    aliases = {
+        "scheduled": ["scheduled", "schedule", "scheduletime", "scheduledtime", "scheduledat", "date", "slot"],
+        "uploadid": ["uploadid", "upload_id", "upload id", "youtubeid", "youtube_id", "videoid", "video_id", "ytid"],
+        "title": ["title", "enrichedtitle", "videotitle", "name", "videoname"],
+        "description": ["description", "desc", "videodescription"],
+        "tags": ["tags", "hashtags", "tag"],
+    }
+    candidates = aliases.get(normalized_target, [normalized_target])
+
+    for i, h in enumerate(headers):
+        norm_h = re.sub(r"[_\s-]+", "", str(h).lower())
+        if norm_h in candidates:
+            return i + 1
+    return None
+
+
+def update_row_fields(
+    channel: str,
+    row_id: int | str,
+    fields: dict[str, str],
+) -> bool:
+    """
+    Update specific column values for a row matched by 'id' in Google Sheet.
+    Example: update_row_fields("channel_a", "12", {"scheduled": "2026-08-28T09:00:00+05:30", "upload id": "abc123xyz"})
+    """
+    try:
+        ws = _sheet(channel)
+        records = ws.get_all_records(default_blank="")
+
+        target_row_num: Optional[int] = None
+        for i, row in enumerate(records):
+            if str(row.get("id", "")).strip() == str(row_id).strip():
+                target_row_num = i + 2  # +1 for header row, +1 for 1-based indexing
+                break
+
+        if target_row_num is None:
+            logger.warning("Channel %s: could not find row with id=%s in Google Sheet", channel, row_id)
+            return False
+
+        headers = ws.row_values(1)
+
+        for col_name, value in fields.items():
+            if value is None:
+                continue
+            col_idx = _find_column_index(headers, col_name)
+            if col_idx is not None:
+                ws.update_cell(target_row_num, col_idx, str(value))
+                logger.debug("Google Sheet cell updated: channel=%s row=%s col=%s val=%s", channel, target_row_num, col_name, value)
+            else:
+                logger.warning("Column '%s' not found in sheet headers: %s", col_name, headers)
+
+        logger.info("Google Sheet row #%s updated for channel %s: %s", row_id, channel, fields)
+        return True
+    except Exception as exc:
+        logger.error("Failed to update Google Sheet row #%s for channel %s: %s", row_id, channel, exc)
+        return False
+
+
 def update_row_after_upload(
     channel: str,
     row_id: int | str,
@@ -192,43 +253,17 @@ def update_row_after_upload(
     enriched_title: str,
 ) -> None:
     """
-    Write scheduled date, YouTube upload ID, and enriched title back to the sheet.
-    Matches row by the 'id' column (same as n8n appendOrUpdate matchingColumns: ['id']).
+    Write scheduled date, YouTube upload ID, and enriched title back to the Google Sheet.
     """
-    ws = _sheet(channel)
-    records = ws.get_all_records(default_blank="")
+    fields = {}
+    if scheduled_at:
+        fields["scheduled"] = scheduled_at
+    if upload_id:
+        fields["upload id"] = upload_id
+    if enriched_title:
+        fields["title"] = enriched_title
 
-    # Find the row number (1-indexed; +2 because row 1 is header, gspread is 1-indexed)
-    target_row_num: int | None = None
-    for i, row in enumerate(records):
-        if str(row.get("id", "")).strip() == str(row_id).strip():
-            target_row_num = i + 2  # +1 for header, +1 for 0→1 index
-            break
-
-    if target_row_num is None:
-        logger.error("Channel %s: could not find row with id=%s to update", channel, row_id)
-        return
-
-    # Find column indices for 'scheduled', 'upload id', 'title'
-    headers = ws.row_values(1)
-    col_map = {h.lower().strip(): i + 1 for i, h in enumerate(headers)}
-
-    def _write(col_name: str, value: str) -> None:
-        col = col_map.get(col_name.lower())
-        if col is None:
-            logger.warning("Column '%s' not found in sheet for channel %s", col_name, channel)
-            return
-        ws.update_cell(target_row_num, col, value)
-        logger.debug("Sheet update: channel=%s row=%s col=%s value=%s", channel, target_row_num, col_name, value)
-
-    _write("scheduled", scheduled_at)
-    _write("upload id", upload_id)
-    _write("title", enriched_title)
-
-    logger.info(
-        "Sheet updated: channel=%s id=%s scheduled=%s upload_id=%s",
-        channel, row_id, scheduled_at, upload_id,
-    )
+    update_row_fields(channel, row_id, fields)
 
 
 def is_row_scheduled(channel: str, row_id: int | str) -> bool:
