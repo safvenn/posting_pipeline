@@ -7,6 +7,7 @@ import ChannelStats from './pages/ChannelStats'
 import FailedJobs from './pages/FailedJobs'
 import PostDetail from './pages/PostDetail'
 import ASMRWorkflow from './pages/ASMRWorkflow'
+import NotFound from './pages/NotFound'
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
           <Route path="/failed" element={<FailedJobs />} />
           <Route path="/post/:id" element={<PostDetail />} />
           <Route path="/asmr" element={<ASMRWorkflow />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </Layout>
     </BrowserRouter>

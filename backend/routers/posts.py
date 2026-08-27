@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from backend.config import settings
@@ -18,6 +19,60 @@ from backend.schemas import PostCreate, PostList, PostRead, RetryResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/posts", tags=["posts"])
+
+# ---------------------------------------------------------------------------
+# Video file validation
+# ---------------------------------------------------------------------------
+
+# Allowed MIME types declared by the client
+_ALLOWED_MIME_TYPES = {
+    "video/mp4", "video/quicktime", "video/x-msvideo", "video/x-matroska",
+    "video/webm", "video/mpeg", "video/3gpp", "video/x-flv",
+    "video/x-ms-wmv", "video/ogg", "application/octet-stream",  # ffmpeg output
+}
+
+# Magic byte signatures  (offset, bytes)
+_VIDEO_MAGIC: list[tuple[int, bytes]] = [
+    (0,  b"\x00\x00\x00\x18ftyp"),   # MP4 / M4V / HEVC (18 atom)
+    (0,  b"\x00\x00\x00\x1cftyp"),   # MP4 / M4V (28 atom)
+    (0,  b"\x00\x00\x00 ftyp"),      # MP4 (32 atom, space = 0x20)
+    (0,  b"\x00\x00\x00\x08ftyp"),   # MP4 (8 atom)
+    (4,  b"ftyp"),                    # generic MP4/MOV (atom at byte 4)
+    (0,  b"\x1aE\xdf\xa3"),          # Matroska / WebM EBML header
+    (0,  b"RIFF"),                    # AVI
+    (0,  b"\x00\x00\x01\xba"),       # MPEG-PS
+    (0,  b"\x00\x00\x01\xb3"),       # MPEG video
+    (0,  b"FLV\x01"),                # FLV
+    (0,  b"OggS"),                   # Ogg / Theora
+    (0,  b"\x30\x26\xb2\x75"),       # WMV / ASF
+]
+
+_MAGIC_READ_BYTES = 16  # how many bytes to read for signature check
+
+
+async def _validate_video_file(video: UploadFile) -> None:
+    """Raise HTTP 400 if the upload is not a recognisable video file."""
+    # 1. MIME type check (not trusted alone — client can lie)
+    ct = (video.content_type or "").split(";")[0].strip().lower()
+    if ct and ct not in _ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ct}'. Please upload a video file (MP4, MOV, MKV, AVI, WebM).",
+        )
+
+    # 2. Magic bytes check — read first 16 bytes
+    header = await video.read(_MAGIC_READ_BYTES)
+    await video.seek(0)  # rewind so the file can be saved normally
+
+    matched = any(
+        header[offset: offset + len(sig)] == sig
+        for offset, sig in _VIDEO_MAGIC
+    )
+    if not matched:
+        raise HTTPException(
+            status_code=400,
+            detail="File signature does not match a supported video format. Ensure you are uploading a real video file.",
+        )
 
 # Status rollback map for retry — go back to last good stage
 _RETRY_STATUS_MAP: dict[str, str] = {
@@ -99,26 +154,52 @@ async def create_post(
     db: Session = Depends(get_db),
 ):
     """Ingest a new video. If sheet_row_id is provided, fetches and binds that specific row."""
+    # Validate file type before doing anything else
+    await _validate_video_file(video)
+
     clean_row_id = sheet_row_id.strip() if sheet_row_id and sheet_row_id.strip() else None
 
     # If specific sheet_row_id was selected, fetch row details from Google Sheets
     if clean_row_id:
         try:
-            from backend.services.sheets import get_row_by_id
+            from backend.services.sheets import get_row_by_id, append_new_row
             sheet_data = get_row_by_id(channel, clean_row_id)
             if sheet_data:
                 sheet_title = str(sheet_data.get("title", "")).strip()
-                if sheet_title:
-                    title = sheet_title
                 sheet_desc = str(sheet_data.get("description", "")).strip()
-                if sheet_desc:
-                    description = sheet_desc
                 sheet_tags = str(sheet_data.get("tags", "")).strip()
-                if sheet_tags:
-                    tags = sheet_tags
-                clean_row_id = str(sheet_data.get("id", clean_row_id)).strip()
+
+                # Check if the selected row was ALREADY scheduled / uploaded in Google Sheet
+                is_already_scheduled = bool(
+                    str(sheet_data.get("scheduled", "")).strip()
+                    or str(sheet_data.get("upload id", "") or sheet_data.get("upload_id", "")).strip()
+                )
+
+                # Prioritize user-provided custom inputs, fallback to sheet values
+                use_title = title.strip() if title and title.strip() else sheet_title
+                use_desc = description.strip() if description and description.strip() else sheet_desc
+                use_tags = tags.strip() if tags and tags.strip() else sheet_tags
+
+                if is_already_scheduled:
+                    # Create a brand new row with fresh incremental ID so previous scheduled row is never overwritten
+                    new_row = append_new_row(
+                        channel=channel,
+                        title=use_title or f"Video {clean_row_id} (New)",
+                        description=use_desc,
+                        tags=use_tags,
+                    )
+                    clean_row_id = str(new_row.get("id"))
+                    title = use_title
+                    description = use_desc
+                    tags = use_tags
+                    logger.info("Selected row %s was already scheduled; created new sheet row ID %s", sheet_data.get("id"), clean_row_id)
+                else:
+                    title = use_title
+                    description = use_desc
+                    tags = use_tags
+                    clean_row_id = str(sheet_data.get("id", clean_row_id)).strip()
         except Exception as exc:
-            logger.warning("Failed to fetch selected sheet row %s: %s", clean_row_id, exc)
+            logger.warning("Failed to process selected sheet row %s: %s", clean_row_id, exc)
 
     # If no sheet_row_id was provided and title is empty, auto-fetch first unscheduled row
     elif not title or not title.strip():
@@ -295,3 +376,44 @@ def retry_post(post_id: int, db: Session = Depends(get_db)):
         new_status=new_status,
         message=f"Post reset from '{old_status}' to '{new_status}'",
     )
+
+
+@router.get("/{post_id}/video")
+@router.get("/{post_id}/video/clean")
+def get_post_video(post_id: int, db: Session = Depends(get_db)):
+    """Serve video file for playback, download, or Instagram Graph API crawler fetching."""
+    post = db.get(Post, post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    from backend.services.watermark import resolve_video_path
+    video_p = resolve_video_path(post.clean_video_path, is_clean=True)
+    if not video_p or not video_p.exists():
+        video_p = resolve_video_path(post.video_path, is_clean=False)
+
+    if not video_p or not video_p.exists():
+        raise HTTPException(status_code=404, detail="Video file not found on disk")
+
+    return FileResponse(
+        path=str(video_p),
+        media_type="video/mp4",
+        filename=f"video-{post.id}.mp4",
+    )
+
+
+@router.post("/{post_id}/instagram/publish")
+def publish_instagram_post(post_id: int, db: Session = Depends(get_db)):
+    """Trigger or retry Instagram Reels publishing for a post."""
+    post = db.get(Post, post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    from backend.services.instagram import publish_reel_for_post
+    res = publish_reel_for_post(post, db)
+    if not res.get("success"):
+        raise HTTPException(
+            status_code=400,
+            detail=res.get("error") or res.get("reason") or "Failed to publish Instagram Reel.",
+        )
+    return res
+

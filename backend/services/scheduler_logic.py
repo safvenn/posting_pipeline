@@ -187,9 +187,9 @@ def pick_next_slot(channel: str, db: Session | None = None) -> datetime:
             for label, hour, minute in SLOTS:
                 slot_dt = _slot_datetime(d, hour, minute)
 
-                # Rule 3: must be strictly in the future (minimum 15m buffer)
-                if slot_dt <= now + timedelta(minutes=15):
-                    logger.debug("Slot %s %s (%s): in past or <15m from now, skip", d, label, slot_dt)
+                # Rule 3: must be strictly in the future (minimum 30m buffer to allow processing)
+                if slot_dt <= now + timedelta(minutes=30):
+                    logger.debug("Slot %s %s (%s): in past or <30m from now, skip", d, label, slot_dt)
                     continue
 
                 # Rule 1: slot window not occupied

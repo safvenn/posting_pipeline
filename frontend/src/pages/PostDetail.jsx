@@ -20,7 +20,7 @@ import {
 import InstagramIcon from '../components/InstagramIcon'
 import StatusBadge from '../components/StatusBadge'
 import LiveStopwatch from '../components/LiveStopwatch'
-import { getPost, retryPost, deletePost } from '../api/posts'
+import { getPost, retryPost, deletePost, publishInstagramReel } from '../api/posts'
 import { getJobTiming, parseUTCDate } from '../utils/timeFormat'
 
 function fmtTime(iso) {
@@ -87,6 +87,20 @@ export default function PostDetail() {
       return () => clearInterval(poll)
     }
   }, [post?.status])
+
+  const [publishingIg, setPublishingIg] = useState(false)
+
+  async function handlePublishInstagram() {
+    setPublishingIg(true)
+    try {
+      await publishInstagramReel(id)
+      load()
+    } catch (e) {
+      alert(e.response?.data?.detail || e.message || String(e))
+    } finally {
+      setPublishingIg(false)
+    }
+  }
 
   async function handleRetry() {
     setRetrying(true)
@@ -349,14 +363,40 @@ export default function PostDetail() {
                       ✓ Published
                     </span>
                   </div>
-                ) : post.instagram_status === 'failed' ? (
-                  <span style={{ color: 'var(--error)', fontSize: 12 }}>
-                    ✗ Failed ({post.instagram_error || 'Publish error'})
-                  </span>
                 ) : (
-                  <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                    {post.instagram_status === 'pending' ? '⏳ Publishing...' : 'Not Published / Disabled'}
-                  </span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      {post.instagram_status === 'failed' ? (
+                        <span style={{ color: 'var(--error)', fontSize: 12 }}>
+                          ✗ Failed ({post.instagram_error || 'Publish error'})
+                        </span>
+                      ) : (
+                        <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                          {post.instagram_status === 'pending' ? '⏳ Publishing...' : 'Not Published / Disabled'}
+                        </span>
+                      )}
+                      {['uploaded', 'cleaned', 'failed'].includes(post.status) && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={handlePublishInstagram}
+                          disabled={publishingIg}
+                          style={{
+                            fontSize: 11,
+                            padding: '3px 10px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            borderColor: 'rgba(225, 48, 108, 0.3)',
+                            color: '#e1306c',
+                          }}
+                        >
+                          <InstagramIcon size={12} color="#e1306c" />
+                          <span>{publishingIg ? 'Publishing Reel...' : (post.instagram_status === 'failed' ? 'Retry Reel' : 'Publish Reel')}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 )
               }
             />

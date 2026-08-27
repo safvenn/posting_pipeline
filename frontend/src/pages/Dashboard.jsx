@@ -47,9 +47,9 @@ function fmtTime(isoStr) {
 
 function StatOverview({ posts }) {
   const total = posts.length
-  const inPipeline = posts.filter(p => ['queued', 'cleaning'].includes(p.status)).length
+  const inPipeline = posts.filter(p => ['queued', 'cleaning', 'cleaned'].includes(p.status)).length
   const scheduled = posts.filter(p => p.status === 'scheduled').length
-  const completed = posts.filter(p => ['uploaded', 'commented', 'cleaned'].includes(p.status)).length
+  const completed = posts.filter(p => ['uploaded', 'commented'].includes(p.status)).length
   const failed = posts.filter(p => p.status === 'failed').length
 
   return (
@@ -90,7 +90,7 @@ function StatOverview({ posts }) {
         </div>
         <div>
           <div className="stat-value">{completed}</div>
-          <div className="stat-label">Processed</div>
+          <div className="stat-label">Completed</div>
         </div>
       </div>
 
@@ -240,8 +240,8 @@ export default function Dashboard() {
       </div>
 
       {/* Posts Table */}
-      <div className="data-table-container">
-        <table className="data-table">
+      <div className="data-table-container" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', width: '100%' }}>
+        <table className="data-table" style={{ minWidth: 680 }}>
           <thead>
             <tr>
               <th style={{ width: 70 }}>ID</th>
@@ -298,8 +298,17 @@ export default function Dashboard() {
                 <tr
                   key={p.id}
                   onClick={() => navigate(`/post/${p.id}`)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      navigate(`/post/${p.id}`)
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
                   className="table-row-interactive"
                   id={`post-row-${p.id}`}
+                  style={{ cursor: 'pointer' }}
                 >
                   <td className="mono" style={{ color: 'var(--text-muted)', fontSize: 11.5, fontWeight: 600 }}>
                     #{p.id}

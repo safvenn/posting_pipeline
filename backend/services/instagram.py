@@ -291,10 +291,15 @@ def create_reels_container(
     video_url: Optional[str] = None,
 ) -> dict:
     """
-    Step 1: Create an Instagram Reel container on Meta Graph API.
-    Uses resumable upload if local video_path is provided.
+    Step 1: Create an Instagram Reel container on Meta / Instagram Graph API.
+    Supports both:
+    1. Direct video_url (required for Instagram User Tokens IGAA... and optional for Meta Page tokens)
+    2. Resumable binary upload (for Meta Business/Page tokens via rupload.facebook.com)
     """
-    url = f"{GRAPH_API_BASE}/{account_id}/media"
+    account_id, access_token = sanitize_instagram_credentials(account_id, access_token)
+    base_url = get_graph_base(access_token)
+    url = f"{base_url}/{account_id}/media"
+
     data = {
         "media_type": "REELS",
         "caption": caption,
@@ -304,11 +309,17 @@ def create_reels_container(
 
     if video_url:
         data["video_url"] = video_url
+    elif access_token.startswith("IG"):
+        raise ValueError(
+            "Instagram User Tokens require a publicly accessible video URL. "
+            "Please ensure RENDER_EXTERNAL_URL or BACKEND_PUBLIC_URL is configured."
+        )
     else:
         data["upload_type"] = "resumable"
 
-    with httpx.Client(timeout=30.0) as client:
-        resp = client.post(url, data=data)
+    headers = {"Authorization": f"Bearer {access_token}"}
+    with httpx.Client(timeout=45.0) as client:
+        resp = client.post(url, data=data, headers=headers)
         res_data = resp.json()
 
         if resp.status_code != 200 or "id" not in res_data:
@@ -322,6 +333,7 @@ def upload_video_resumable(upload_uri: str, access_token: str, video_path: str) 
     """
     Step 1b: Upload video bytes directly to Meta rupload endpoint for local files.
     """
+    _, access_token = sanitize_instagram_credentials("", access_token)
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video file not found at: {video_path}")
 
@@ -351,16 +363,19 @@ def wait_for_container_ready(
     """
     Step 2: Poll container until Instagram finishes transcoding the video (status_code == 'FINISHED').
     """
-    url = f"{GRAPH_API_BASE}/{container_id}"
+    _, access_token = sanitize_instagram_credentials("", access_token)
+    base_url = get_graph_base(access_token)
+    url = f"{base_url}/{container_id}"
     params = {
         "fields": "status_code,status",
         "access_token": access_token,
     }
+    headers = {"Authorization": f"Bearer {access_token}"}
 
     start_time = time.time()
     with httpx.Client(timeout=15.0) as client:
         while time.time() - start_time < max_wait_seconds:
-            resp = client.get(url, params=params)
+            resp = client.get(url, params=params, headers=headers)
             data = resp.json()
             status_code = data.get("status_code", "").upper()
 
@@ -382,14 +397,17 @@ def publish_container(account_id: str, access_token: str, container_id: str) -> 
     Step 3: Publish the ready container to Instagram Reels.
     Returns published media ID.
     """
-    url = f"{GRAPH_API_BASE}/{account_id}/media_publish"
+    account_id, access_token = sanitize_instagram_credentials(account_id, access_token)
+    base_url = get_graph_base(access_token)
+    url = f"{base_url}/{account_id}/media_publish"
     data = {
         "creation_id": container_id,
         "access_token": access_token,
     }
+    headers = {"Authorization": f"Bearer {access_token}"}
 
     with httpx.Client(timeout=30.0) as client:
-        resp = client.post(url, data=data)
+        resp = client.post(url, data=data, headers=headers)
         res_data = resp.json()
 
         if resp.status_code != 200 or "id" not in res_data:
@@ -403,15 +421,18 @@ def fetch_media_permalink(media_id: str, access_token: str) -> Optional[str]:
     """
     Fetch direct URL to the published Instagram Reel (e.g. https://www.instagram.com/reel/...).
     """
-    url = f"{GRAPH_API_BASE}/{media_id}"
+    _, access_token = sanitize_instagram_credentials("", access_token)
+    base_url = get_graph_base(access_token)
+    url = f"{base_url}/{media_id}"
     params = {
         "fields": "id,permalink",
         "access_token": access_token,
     }
+    headers = {"Authorization": f"Bearer {access_token}"}
 
     try:
         with httpx.Client(timeout=15.0) as client:
-            resp = client.get(url, params=params)
+            resp = client.get(url, params=params, headers=headers)
             data = resp.json()
             return data.get("permalink")
     except Exception as exc:
@@ -419,12 +440,26 @@ def fetch_media_permalink(media_id: str, access_token: str) -> Optional[str]:
         return None
 
 
-def publish_reel_for_post(post: Post, db: Session) -> dict:
+def resolve_post_video_url(post: Post) -> Optional[str]:
+    """
+    Resolve public HTTPS video URL for a post if backend has a public domain (e.g. Render).
+    """
+    from backend.config import settings
+    public_base = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("BACKEND_PUBLIC_URL") or getattr(settings, "backend_public_url", "")
+    if public_base and public_base.strip():
+        public_base = public_base.strip().rstrip("/")
+        if not public_base.startswith("http://") and not public_base.startswith("https://"):
+            public_base = f"https://{public_base}"
+        return f"{public_base}/api/posts/{post.id}/video"
+    return None
+
+
+def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[str] = None) -> dict:
     """
     End-to-end publishing pipeline for Instagram Reels:
     1. Check if channel has Instagram enabled and valid credentials.
     2. Build caption and format hashtags.
-    3. Upload video and poll container.
+    3. Upload video (via public URL or resumable binary) and poll container.
     4. Publish Reel and record permalink on post.
     """
     # Find channel config
@@ -435,8 +470,10 @@ def publish_reel_for_post(post: Post, db: Session) -> dict:
             "reason": "Instagram publishing is not enabled for this channel.",
         }
 
-    account_id = (ch.instagram_account_id or "").strip()
-    access_token = (ch.instagram_access_token or "").strip()
+    account_id, access_token = sanitize_instagram_credentials(
+        ch.instagram_account_id or "",
+        ch.instagram_access_token or "",
+    )
 
     if not account_id or not access_token:
         err = "Instagram Account ID or Access Token is missing in Channel Config."
@@ -445,8 +482,27 @@ def publish_reel_for_post(post: Post, db: Session) -> dict:
         db.commit()
         return {"success": False, "error": err}
 
-    video_path = post.clean_video_path or post.video_path
-    if not video_path or not os.path.exists(video_path):
+    from backend.services.watermark import resolve_video_path
+    video_p = resolve_video_path(post.clean_video_path, is_clean=True)
+    if not video_p or not video_p.exists():
+        video_p = resolve_video_path(post.video_path, is_clean=False)
+
+    video_path = str(video_p) if video_p and video_p.exists() else (post.clean_video_path or post.video_path)
+
+    # Determine video_url
+    video_url = video_url_override or resolve_post_video_url(post)
+
+    # If using Instagram User Token (IGAA...), video_url is required
+    if access_token.startswith("IG") and not video_url:
+        # Check if local video path is missing
+        if not video_path or not os.path.exists(video_path):
+            err = f"Video file not found for post {post.id} and no public URL is available."
+            post.instagram_status = "failed"
+            post.instagram_error = err
+            db.commit()
+            return {"success": False, "error": err}
+
+    if not video_url and (not video_path or not os.path.exists(video_path)):
         err = f"Video file not found for post {post.id}: {video_path}"
         post.instagram_status = "failed"
         post.instagram_error = err
@@ -469,13 +525,14 @@ def publish_reel_for_post(post: Post, db: Session) -> dict:
             account_id=account_id,
             access_token=access_token,
             caption=caption,
-            video_path=video_path,
+            video_path=video_path if not video_url else None,
+            video_url=video_url,
         )
         container_id = container_data["id"]
         upload_uri = container_data.get("uri")
 
         # Step 1b: Upload video binary if resumable upload uri provided
-        if upload_uri:
+        if upload_uri and video_path and os.path.exists(video_path):
             upload_video_resumable(
                 upload_uri=upload_uri,
                 access_token=access_token,

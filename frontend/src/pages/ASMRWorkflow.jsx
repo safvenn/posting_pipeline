@@ -61,10 +61,10 @@ export default function ASMRWorkflow() {
     setLoading(true)
     try {
       const [runsRes, foodsRes, statsRes, contentRes] = await Promise.all([
-        client.get('/workflows/asmr/runs').catch(() => ({ data: { items: [] } })),
+        client.get('/asmr/runs').catch(() => ({ data: { items: [] } })),
         client.get('/asmr/foods?limit=50').catch(() => ({ data: { items: [] } })),
         client.get('/asmr/foods/stats').catch(() => ({ data: null })),
-        client.get('/workflows/asmr/content').catch(() => ({ data: { items: [] } })),
+        client.get('/asmr/content').catch(() => ({ data: { items: [] } })),
       ])
       setRuns(runsRes.data?.items || [])
       setFoods(foodsRes.data?.items || [])
@@ -79,7 +79,7 @@ export default function ASMRWorkflow() {
   async function triggerWorkflow(dryRun = false) {
     setTriggerLoading(true)
     try {
-      await client.post('/workflows/asmr/run', { dry_run: dryRun })
+      await client.post('/asmr/run', { dry_run: dryRun })
       setTimeout(fetchAll, 1500)
     } catch (e) {
       alert('Trigger failed: ' + (e.response?.data?.detail || e.message))
@@ -89,7 +89,7 @@ export default function ASMRWorkflow() {
 
   async function retryRun(runId) {
     try {
-      await client.post(`/workflows/asmr/runs/${runId}/retry`)
+      await client.post(`/asmr/runs/${runId}/retry`)
       setTimeout(fetchAll, 1500)
     } catch (e) {
       alert('Retry failed: ' + (e.response?.data?.detail || e.message))

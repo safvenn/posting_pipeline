@@ -78,7 +78,7 @@ def test_instagram_connection_invalid_credentials():
         assert "Invalid OAuth access token" in res["message"]
 
 
-def test_create_reels_container():
+def test_create_reels_container_meta_business():
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
@@ -89,11 +89,40 @@ def test_create_reels_container():
     with patch("httpx.Client.post", return_value=mock_resp):
         res = create_reels_container(
             account_id="178414000000000",
-            access_token="test_token",
+            access_token="EAAG_test_token",
             caption="Test Caption",
         )
         assert res["id"] == "container_12345"
         assert "rupload.facebook.com" in res["uri"]
+
+
+def test_create_reels_container_instagram_user_token():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "id": "container_ig_67890",
+    }
+
+    with patch("httpx.Client.post", return_value=mock_resp) as mock_post:
+        res = create_reels_container(
+            account_id="28011792591804910",
+            access_token="IGAA_test_token_123",
+            caption="Test Reel #asmr",
+            video_url="https://example.com/api/posts/1/video",
+        )
+        assert res["id"] == "container_ig_67890"
+        # Verify it called graph.instagram.com
+        called_url = mock_post.call_args[0][0]
+        assert "graph.instagram.com" in called_url
+
+
+def test_create_reels_container_instagram_token_without_url_raises():
+    with pytest.raises(ValueError, match="Instagram User Tokens require a publicly accessible video URL"):
+        create_reels_container(
+            account_id="28011792591804910",
+            access_token="IGAA_test_token_123",
+            caption="Test Reel",
+        )
 
 
 def test_wait_for_container_ready():
@@ -127,3 +156,4 @@ def test_publish_reel_skipped_when_disabled():
     post = Post(id=1, channel="channel_a", title="Test Post", video_path="video.mp4")
     res = publish_reel_for_post(post, db)
     assert res.get("skipped") is True
+

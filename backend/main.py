@@ -8,10 +8,12 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, Security, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 
+from backend.config import settings
 from backend.database import Base, engine
 from backend.routers import channels, posts, schedule
 from backend.routers.asmr import router as asmr_router, food_router as asmr_food_router
@@ -114,22 +116,49 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS — allow Vite dev server, Vercel deployments, and production domains
+    # ---- CORS: explicit allowlist only ----
+    raw_origins = settings.allowed_origins
+    allowed = [o.strip() for o in raw_origins.split(",") if o.strip()]
+    # Also allow the render/production backend public URL's frontend sibling (optional)
+    if settings.backend_public_url:
+        allowed.append(settings.backend_public_url.rstrip("/"))
     app.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=r"https?://.*",
+        allow_origins=allowed,          # explicit list — never a regex wildcard
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    # Routers
-    app.include_router(posts.router)
-    app.include_router(channels.router)
-    app.include_router(schedule.router)
-    app.include_router(asmr_router)
-    app.include_router(asmr_food_router)
+    # ---- Bearer-token auth dependency ----
+    _bearer = HTTPBearer(auto_error=False)
 
+    def require_api_key(
+        credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
+    ) -> None:
+        """Reject requests that don't carry the configured API key."""
+        expected = settings.api_key
+        if not expected:
+            # No key configured → auth disabled (dev mode, local-only)
+            return
+        if not credentials or credentials.credentials != expected:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or missing API key",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    # Public OAuth callback router (no auth required)
+    app.include_router(channels.public_router)
+
+    # Routers (all protected by api-key dependency)
+    app.include_router(posts.router,    dependencies=[Depends(require_api_key)])
+    app.include_router(channels.router, dependencies=[Depends(require_api_key)])
+    app.include_router(schedule.router, dependencies=[Depends(require_api_key)])
+    app.include_router(asmr_router,     dependencies=[Depends(require_api_key)])
+    app.include_router(asmr_food_router, dependencies=[Depends(require_api_key)])
+
+    # Public health endpoint — no auth required
     @app.get("/api/health")
     def health():
         jobs = [

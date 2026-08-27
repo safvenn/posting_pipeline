@@ -6,7 +6,7 @@ import uuid
 from typing import List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
@@ -49,8 +49,20 @@ def get_channels(db: Session = Depends(get_db)):
     return results
 
 
+def _get_redirect_uri(request: Optional[Request] = None) -> str:
+    """Dynamically determine OAuth callback URL based on deployment or incoming request."""
+    base = settings.backend_public_url.strip().rstrip("/") if settings.backend_public_url else ""
+    if not base and request:
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost:8000"))
+        base = f"{proto}://{host}".rstrip("/")
+    if not base:
+        base = "http://localhost:8000"
+    return f"{base}/api/channels/oauth/callback"
+
+
 @router.get("/auth-url")
-def get_global_auth_url(channel: Optional[str] = None, db: Session = Depends(get_db)):
+def get_global_auth_url(request: Request, channel: Optional[str] = None, db: Session = Depends(get_db)):
     """Generate Google OAuth consent URL using shared system Client ID."""
     client_id, _ = settings.get_google_oauth_credentials()
     if not client_id:
@@ -59,7 +71,7 @@ def get_global_auth_url(channel: Optional[str] = None, db: Session = Depends(get
             detail="GOOGLE_CLIENT_ID not configured in .env. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."
         )
 
-    redirect_uri = "http://localhost:8000/api/channels/oauth/callback"
+    redirect_uri = _get_redirect_uri(request)
     scopes = "https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl"
     
     state = channel or f"new_{uuid.uuid4().hex[:6]}"
@@ -77,13 +89,16 @@ def get_global_auth_url(channel: Optional[str] = None, db: Session = Depends(get
 
 
 @router.get("/{channel}/auth-url")
-def get_channel_auth_url(channel: str, db: Session = Depends(get_db)):
+def get_channel_auth_url(channel: str, request: Request, db: Session = Depends(get_db)):
     """Generate Google OAuth consent URL for a specific channel."""
-    return get_global_auth_url(channel=channel, db=db)
+    return get_global_auth_url(request=request, channel=channel, db=db)
 
 
-@router.get("/oauth/callback")
-def oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
+public_router = APIRouter(prefix="/api/channels", tags=["channels-oauth"])
+
+
+@public_router.get("/oauth/callback")
+def oauth_callback(code: str, state: str, request: Request, db: Session = Depends(get_db)):
     """
     Handle Google OAuth callback:
     1. Exchange authorization code for refresh_token using shared credentials
@@ -94,7 +109,7 @@ def oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
     if not (client_id and client_secret):
         raise HTTPException(status_code=400, detail="Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET in .env")
 
-    redirect_uri = "http://localhost:8000/api/channels/oauth/callback"
+    redirect_uri = _get_redirect_uri(request)
     token_url = "https://oauth2.googleapis.com/token"
     data = {
         "code": code,
@@ -392,3 +407,13 @@ def _fetch_channel_stats(channel: str, default_name: str = "", is_custom: bool =
             instagram_ok=ig_ok,
         )
 
+
+@router.post("/refresh-sheets", status_code=200)
+def refresh_sheets_client():
+    """Invalidate the cached gspread client so new credentials take effect immediately.
+    Normally the cache auto-expires every 10 minutes; call this endpoint right after
+    updating the service account JSON to skip the wait.
+    """
+    from backend.services.sheets import invalidate_gspread_client
+    invalidate_gspread_client()
+    return {"message": "Google Sheets client cache cleared. Next request will re-authenticate."}

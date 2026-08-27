@@ -29,7 +29,7 @@ from backend.services.asmr.workflow import ASMRContentWorkflow, retry_workflow_r
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/workflows/asmr", tags=["asmr-workflow"])
+router = APIRouter(prefix="/api/asmr", tags=["asmr-workflow"])
 
 
 # --------------------------------------------------------------------------- #

@@ -86,6 +86,8 @@ def get_schedule_matrix(
         query = query.filter(ChannelConfig.key == channel)
     channels = query.all()
 
+    ch_ig_map = {c.key: bool(c.instagram_enabled) for c in channels} if channels else {}
+
     if not channels:
         active_channel_list = [
             ("the_indian_kitchen", "The Indian Kitchen"),
@@ -98,6 +100,8 @@ def get_schedule_matrix(
     results: list[ScheduleSlot] = []
 
     for channel_key, channel_name in active_channel_list:
+        ig_enabled = ch_ig_map.get(channel_key, False)
+
         # 1. Fetch live YouTube scheduled videos
         yt_scheduled_list: list[dict] = []
         try:
@@ -129,12 +133,13 @@ def get_schedule_matrix(
         except Exception as exc:
             logger.debug("Could not fetch live YouTube scheduled for %s: %s", channel_key, exc)
 
-        # 2. Fetch database posts for this channel with scheduled_at
+        # 2. Fetch database posts for this channel with scheduled_at (excluding failed posts)
         db_posts = (
             db.query(Post)
             .filter(
                 Post.channel == channel_key,
                 Post.scheduled_at.isnot(None),
+                Post.status != "failed",
             )
             .all()
         )
@@ -218,6 +223,7 @@ def get_schedule_matrix(
                             slot_time_formatted=matched_item["scheduled_at"].strftime("%I:%M %p"),
                             instagram_post_url=matched_item.get("instagram_post_url"),
                             instagram_status=matched_item.get("instagram_status"),
+                            instagram_enabled=ig_enabled,
                         )
                     )
                 else:
@@ -233,6 +239,7 @@ def get_schedule_matrix(
                             is_available=is_in_future,
                             is_off_slot=False,
                             slot_time_formatted=f"{hour:02d}:{minute:02d}",
+                            instagram_enabled=ig_enabled,
                         )
                     )
 
@@ -255,6 +262,7 @@ def get_schedule_matrix(
                             slot_time_formatted=item["scheduled_at"].strftime("%I:%M %p"),
                             instagram_post_url=item.get("instagram_post_url"),
                             instagram_status=item.get("instagram_status"),
+                            instagram_enabled=ig_enabled,
                         )
                     )
 
@@ -460,4 +468,18 @@ def get_scheduled_posts_list(channel: Optional[str] = None, db: Session = Depend
     )
 
     return results
+
+
+@router.post("/clear-failed")
+def clear_failed_schedules(db: Session = Depends(get_db)):
+    """Reset or clear schedule timestamp for failed posts."""
+    failed_posts = db.query(Post).filter(Post.status == "failed").all()
+    count = 0
+    for p in failed_posts:
+        if p.scheduled_at:
+            p.scheduled_at = None
+            count += 1
+    db.commit()
+    return {"message": f"Cleared schedule timestamp from {count} failed posts", "count": count}
+
 

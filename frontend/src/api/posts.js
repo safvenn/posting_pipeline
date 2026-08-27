@@ -21,3 +21,7 @@ export const uploadPost = (formData) =>
     timeout: 120000,
   }).then(r => r.data)
 
+export const publishInstagramReel = (id) =>
+  client.post(`/posts/${id}/instagram/publish`).then(r => r.data)
+
+

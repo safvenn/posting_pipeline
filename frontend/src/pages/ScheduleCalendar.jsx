@@ -11,10 +11,11 @@ import {
   CheckCircle2,
   AlertCircle,
   ArrowRight,
+  Trash2,
 } from 'lucide-react'
 import InstagramIcon from '../components/InstagramIcon'
 import StatusBadge from '../components/StatusBadge'
-import { getSchedule, rescheduleSlot } from '../api/schedule'
+import { getSchedule, rescheduleSlot, clearFailedSchedules } from '../api/schedule'
 import { getChannels } from '../api/channels'
 import { parseUTCDate } from '../utils/timeFormat'
 
@@ -144,6 +145,17 @@ export default function ScheduleCalendar() {
     }
   }
 
+  async function handleClearFailed() {
+    if (!confirm('Clear schedule timestamps from any failed posts so slots become available?')) return
+    try {
+      const res = await clearFailedSchedules()
+      showNotification('success', res.message || 'Cleared failed schedules')
+      load()
+    } catch (err) {
+      showNotification('error', 'Failed to clear failed schedules')
+    }
+  }
+
   return (
     <div>
       {/* Toast Notification */}
@@ -198,6 +210,16 @@ export default function ScheduleCalendar() {
             <option value={30}>Next 30 Days</option>
           </select>
 
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={handleClearFailed}
+            title="Clear and reset schedule timestamps from failed posts"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+          >
+            <Trash2 size={13} />
+            <span>Clear Failed</span>
+          </button>
+
           <button className="btn btn-secondary" onClick={load} disabled={loading || rescheduling}>
             <RefreshCw size={14} className={loading || rescheduling ? 'spinner' : ''} />
             <span>Refresh</span>
@@ -208,7 +230,7 @@ export default function ScheduleCalendar() {
       {/* Legend & Viral Timing Info Card */}
       <div className="card" style={{ padding: '14px 20px', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 14 }}>
-          <div style={{ display: 'flex', gap: 20, alignItems: 'center', fontSize: 12 }}>
+          <div style={{ display: 'flex', gap: 18, alignItems: 'center', fontSize: 12, flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
               <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: 'var(--bg-subtle)', border: '1px dashed var(--accent-primary)', display: 'inline-block' }} />
               <span style={{ color: 'var(--text-muted)' }}>Available Viral Slot (Drop here)</span>
@@ -218,14 +240,36 @@ export default function ScheduleCalendar() {
               <span style={{ color: 'var(--text-secondary)' }}>Scheduled Post (Draggable)</span>
             </div>
             <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
+              <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: 'rgba(34, 197, 94, 0.2)', border: '1px solid rgba(34, 197, 94, 0.4)', display: 'inline-block' }} />
+              <span style={{ color: 'var(--success)' }}>✓ Posted (Fixed)</span>
+            </div>
+            <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
               <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: '#78350f22', border: '1px solid #f59e0b', display: 'inline-block' }} />
               <span style={{ color: '#f59e0b' }}>Off-Schedule Time</span>
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--accent-primary)', fontSize: 12, fontWeight: 500 }}>
-            <Sparkles size={14} />
-            <span>Optimal Viral Peaks: Slot A (12:30 PM) &amp; Slot B (6:30 PM IST)</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 10px',
+              borderRadius: 6,
+              backgroundColor: 'rgba(225, 48, 108, 0.08)',
+              border: '1px solid rgba(225, 48, 108, 0.25)',
+              color: '#e1306c',
+              fontSize: 11.5,
+              fontWeight: 600,
+            }}>
+              <InstagramIcon size={13} color="#e1306c" />
+              <span>Instagram Reels Auto-Posting Active</span>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--accent-primary)', fontSize: 12, fontWeight: 500 }}>
+              <Sparkles size={14} />
+              <span>Viral Peaks: Slot A (12:30 PM) &amp; Slot B (6:30 PM IST)</span>
+            </div>
           </div>
         </div>
       </div>
@@ -326,12 +370,13 @@ export default function ScheduleCalendar() {
                         const isFailed = s.status === 'failed'
                         const isAvail = s.is_available
                         const isOccupied = !isAvail && s.post_title
+                        const isPosted = ['uploaded', 'commented'].includes(s.status) || (new Date(s.scheduled_at) < new Date() && Boolean(s.youtube_video_id))
 
                         return (
                           <td
                             key={slotKey}
                             onDragOver={e => {
-                              if (isAvail && draggedItem) {
+                              if (isAvail && draggedItem && !isPosted) {
                                 e.preventDefault()
                                 setDragOverKey(slotKey)
                               }
@@ -340,7 +385,7 @@ export default function ScheduleCalendar() {
                               if (dragOverKey === slotKey) setDragOverKey(null)
                             }}
                             onDrop={e => {
-                              if (isAvail) {
+                              if (isAvail && !isPosted) {
                                 handleDrop(e, d, label, s.scheduled_at, ch)
                               }
                             }}
@@ -353,29 +398,50 @@ export default function ScheduleCalendar() {
                           >
                             {isOccupied ? (
                               <div
-                                draggable={true}
-                                onDragStart={e => handleDragStart(e, s)}
+                                draggable={!isPosted}
+                                onDragStart={e => !isPosted && handleDragStart(e, s)}
                                 onDragEnd={handleDragEnd}
                                 style={{
-                                  backgroundColor: isFailed ? 'var(--error-subtle)' : 'var(--bg-elevated)',
-                                  border: `1px solid ${isFailed ? 'var(--error-border)' : 'var(--accent-border, #6366f144)'}`,
+                                  backgroundColor: isFailed ? 'var(--error-subtle)' : isPosted ? 'rgba(34, 197, 94, 0.06)' : 'var(--bg-elevated)',
+                                  border: `1px solid ${isFailed ? 'var(--error-border)' : isPosted ? 'rgba(34, 197, 94, 0.35)' : 'var(--accent-border, #6366f144)'}`,
                                   borderRadius: 8,
                                   padding: '10px 12px',
-                                  cursor: 'grab',
+                                  cursor: isPosted ? 'default' : 'grab',
                                   position: 'relative',
                                   boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
                                   transition: 'transform 0.15s, box-shadow 0.15s',
                                 }}
-                                className="scheduled-card-hover"
+                                className={isPosted ? '' : 'scheduled-card-hover'}
                               >
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10.5, color: 'var(--accent-primary)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10.5, color: isPosted ? 'var(--success, #22c55e)' : 'var(--accent-primary)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
                                     <Clock size={11} />
                                     <span>{fmtTime(s.scheduled_at)}</span>
                                   </div>
 
                                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                    <GripVertical size={13} color="var(--text-muted)" style={{ cursor: 'grab' }} />
+                                    {isPosted ? (
+                                      <span
+                                        style={{
+                                          fontSize: 10,
+                                          fontWeight: 700,
+                                          color: 'var(--success, #22c55e)',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: 3,
+                                          backgroundColor: 'rgba(34, 197, 94, 0.12)',
+                                          padding: '2px 6px',
+                                          borderRadius: 4,
+                                          border: '1px solid rgba(34, 197, 94, 0.3)',
+                                        }}
+                                        title="Video is published and fixed in place"
+                                      >
+                                        <CheckCircle2 size={11} /> Posted
+                                      </span>
+                                    ) : (
+                                      <GripVertical size={13} color="var(--text-muted)" style={{ cursor: 'grab' }} />
+                                    )}
+
                                     {s.youtube_video_id && (
                                       <a
                                         href={`https://studio.youtube.com/video/${s.youtube_video_id}/edit`}
@@ -386,7 +452,7 @@ export default function ScheduleCalendar() {
                                         style={{ height: 20, width: 20, padding: 0 }}
                                         onClick={e => e.stopPropagation()}
                                       >
-                                        <ExternalLink size={12} color="var(--accent-primary)" />
+                                        <ExternalLink size={12} color={isPosted ? 'var(--success, #22c55e)' : 'var(--accent-primary)'} />
                                       </a>
                                     )}
                                   </div>
@@ -408,8 +474,8 @@ export default function ScheduleCalendar() {
 
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, flexWrap: 'wrap', gap: 6 }}>
                                   {s.status && <StatusBadge status={s.status} />}
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                    {s.instagram_post_url && (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    {s.instagram_post_url ? (
                                       <a
                                         href={s.instagram_post_url}
                                         target="_blank"
@@ -422,14 +488,56 @@ export default function ScheduleCalendar() {
                                           gap: 3,
                                           textDecoration: 'none',
                                           fontWeight: 600,
+                                          backgroundColor: 'rgba(225, 48, 108, 0.08)',
+                                          padding: '2px 5px',
+                                          borderRadius: 4,
+                                          border: '1px solid rgba(225, 48, 108, 0.2)',
                                         }}
-                                        title="Open Instagram Reel"
+                                        title="Open Published Instagram Reel"
                                         onClick={e => e.stopPropagation()}
                                       >
-                                        <InstagramIcon size={10} />
-                                        <span>Reel</span>
+                                        <InstagramIcon size={10} color="#e1306c" />
+                                        <span>Reel ✓</span>
                                       </a>
-                                    )}
+                                    ) : s.instagram_status === 'pending' ? (
+                                      <span
+                                        style={{
+                                          fontSize: 10,
+                                          color: '#e1306c',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: 3,
+                                          fontWeight: 600,
+                                          backgroundColor: 'rgba(225, 48, 108, 0.08)',
+                                          padding: '2px 5px',
+                                          borderRadius: 4,
+                                        }}
+                                        title="Publishing to Instagram Reels"
+                                      >
+                                        <InstagramIcon size={10} color="#e1306c" />
+                                        <span>⏳ Posting</span>
+                                      </span>
+                                    ) : s.instagram_enabled ? (
+                                      <span
+                                        style={{
+                                          fontSize: 10,
+                                          color: '#e1306c',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: 3,
+                                          fontWeight: 600,
+                                          backgroundColor: 'rgba(225, 48, 108, 0.08)',
+                                          padding: '2px 5px',
+                                          borderRadius: 4,
+                                          border: '1px solid rgba(225, 48, 108, 0.2)',
+                                        }}
+                                        title="This post will also auto-publish to Instagram Reels"
+                                      >
+                                        <InstagramIcon size={10} color="#e1306c" />
+                                        <span>Insta Sync</span>
+                                      </span>
+                                    ) : null}
+
                                     {s.youtube_video_id && (
                                       <a
                                         href={`https://studio.youtube.com/video/${s.youtube_video_id}/edit`}
@@ -513,67 +621,83 @@ export default function ScheduleCalendar() {
                             <td key={`${d}-${ch}-off`} colSpan={2} style={{ padding: '8px 12px' }}>
                               {offList.length > 0 ? (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                                  {offList.map((item, i) => (
-                                    <div
-                                      key={i}
-                                      draggable={true}
-                                      onDragStart={e => handleDragStart(e, item)}
-                                      onDragEnd={handleDragEnd}
-                                      style={{
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'space-between',
-                                        padding: '6px 10px',
-                                        backgroundColor: '#78350f22',
-                                        border: '1px solid #f59e0b55',
-                                        borderRadius: 6,
-                                        fontSize: 11.5,
-                                        cursor: 'grab',
-                                      }}
-                                    >
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                                        <GripVertical size={12} color="#f59e0b" />
-                                        <span style={{ fontWeight: 600, color: '#f59e0b', fontFamily: 'var(--font-mono)' }}>
-                                          {fmtTime(item.scheduled_at)}
-                                        </span>
-                                        <span className="truncate-text" style={{ color: 'var(--text-primary)', maxWidth: 220 }}>
-                                          {item.post_title}
-                                        </span>
-                                      </div>
+                                  {offList.map((item, i) => {
+                                    const isItemPosted = ['uploaded', 'commented'].includes(item.status) || (new Date(item.scheduled_at) < new Date() && Boolean(item.youtube_video_id))
+                                    return (
+                                      <div
+                                        key={i}
+                                        draggable={!isItemPosted}
+                                        onDragStart={e => !isItemPosted && handleDragStart(e, item)}
+                                        onDragEnd={handleDragEnd}
+                                        style={{
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'space-between',
+                                          padding: '6px 10px',
+                                          backgroundColor: isItemPosted ? 'rgba(34, 197, 94, 0.06)' : '#78350f22',
+                                          border: `1px solid ${isItemPosted ? 'rgba(34, 197, 94, 0.35)' : '#f59e0b55'}`,
+                                          borderRadius: 6,
+                                          fontSize: 11.5,
+                                          cursor: isItemPosted ? 'default' : 'grab',
+                                        }}
+                                      >
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                                          {isItemPosted ? (
+                                            <span style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--success, #22c55e)', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                                              <CheckCircle2 size={10} /> Posted
+                                            </span>
+                                          ) : (
+                                            <GripVertical size={12} color="#f59e0b" />
+                                          )}
+                                          <span style={{ fontWeight: 600, color: isItemPosted ? 'var(--success, #22c55e)' : '#f59e0b', fontFamily: 'var(--font-mono)' }}>
+                                            {fmtTime(item.scheduled_at)}
+                                          </span>
+                                          <span className="truncate-text" style={{ color: 'var(--text-primary)', maxWidth: 220 }}>
+                                            {item.post_title}
+                                          </span>
+                                        </div>
 
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                        {item.instagram_post_url && (
-                                          <a
-                                            href={item.instagram_post_url}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="btn btn-ghost btn-xs btn-icon"
-                                            title="Open Instagram Reel"
-                                            onClick={e => e.stopPropagation()}
-                                            style={{ height: 20, width: 20, padding: 0 }}
-                                          >
-                                            <InstagramIcon size={12} color="#e1306c" />
-                                          </a>
-                                        )}
-                                        {item.youtube_video_id && (
-                                          <a
-                                            href={`https://studio.youtube.com/video/${item.youtube_video_id}/edit`}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="btn btn-ghost btn-xs btn-icon"
-                                            title="Open in YouTube Studio"
-                                            onClick={e => e.stopPropagation()}
-                                            style={{ height: 20, width: 20, padding: 0 }}
-                                          >
-                                            <ExternalLink size={12} color="#f59e0b" />
-                                          </a>
-                                        )}
-                                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                                          Drag to Slot A/B to align
-                                        </span>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                          {item.instagram_post_url ? (
+                                            <a
+                                              href={item.instagram_post_url}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="btn btn-ghost btn-xs btn-icon"
+                                              title="Open Instagram Reel"
+                                              onClick={e => e.stopPropagation()}
+                                              style={{ height: 20, width: 20, padding: 0 }}
+                                            >
+                                              <InstagramIcon size={12} color="#e1306c" />
+                                            </a>
+                                          ) : item.instagram_enabled ? (
+                                            <span style={{ fontSize: 9.5, color: '#e1306c', display: 'inline-flex', alignItems: 'center', gap: 2 }} title="Instagram Reels Sync Active">
+                                              <InstagramIcon size={10} color="#e1306c" />
+                                            </span>
+                                          ) : null}
+
+                                          {item.youtube_video_id && (
+                                            <a
+                                              href={`https://studio.youtube.com/video/${item.youtube_video_id}/edit`}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="btn btn-ghost btn-xs btn-icon"
+                                              title="Open in YouTube Studio"
+                                              onClick={e => e.stopPropagation()}
+                                              style={{ height: 20, width: 20, padding: 0 }}
+                                            >
+                                              <ExternalLink size={12} color="#f59e0b" />
+                                            </a>
+                                          )}
+                                          {!isItemPosted && (
+                                            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                              Drag to Slot A/B
+                                            </span>
+                                          )}
+                                        </div>
                                       </div>
-                                    </div>
-                                  ))}
+                                    )
+                                  })}
                                 </div>
                               ) : (
                                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</span>

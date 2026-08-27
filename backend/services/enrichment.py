@@ -48,9 +48,10 @@ _SEO_POOL_CHANNEL_B = (
 
 # ---- System message ----
 _SYSTEM_MESSAGE = (
-    "You are an elite YouTube Growth & SEO Agent specializing in viral YouTube Shorts. "
-    "Your goal is to craft high-CTR, algorithmically optimized metadata that maximizes search rankings, "
-    "audience engagement (likes, comments, shares), and viewer retention. "
+    "You are an elite, top-tier YouTube Shorts & Reels Content Creator and Viral SEO Specialist. "
+    "Your mission is to produce human-crafted, high-CTR, algorithmically boosted metadata tailored specifically "
+    "to the unique dish and action in the video. "
+    "CRITICAL: Avoid generic bot-like titles. Vary your title styles dynamically across posts. "
     "Follow all scheduling and content rules strictly. "
     "Always respond with valid JSON only — no Markdown, no explanations, no code fences."
 )
@@ -64,7 +65,7 @@ def _build_prompt(
     all_rows: list[dict],
     target_row: Optional[dict] = None,
 ) -> str:
-    """Build the full Gemini prompt with viral engagement & keyword-boosted SEO rules."""
+    """Build the full Gemini prompt with diverse hook styles, SEO keywords, and viral engagement rules."""
     seo_pool = ""
     try:
         from backend.database import SessionLocal
@@ -82,13 +83,15 @@ def _build_prompt(
     channel_name = channel_details.get("snippet", {}).get("title", channel)
     subscribe_cta_example = f"🔔 Subscribe to {channel_name} for daily satisfying miniature cooking adventures!"
 
+    recent_titles_sample = [v.get("snippet", {}).get("title", "") for v in recent_videos[:8] if v.get("snippet", {}).get("title")]
+
     if target_row:
         row_context_section = f"""TARGET GOOGLE SHEET ROW (ENRICH AND PROCESS THIS EXACT SELECTED ROW):
 {json.dumps(target_row, indent=2)}
 
 SELECTION INSTRUCTION:
 - You MUST enrich and generate optimized metadata specifically for the TARGET ROW above (ID: {target_row.get('id')}).
-- Extract its `id`, `title`, `description`, and `tags`. Do NOT select any other row.
+- Extract and utilize its exact `id`, `title`, `description`, and `tags`.
 - In your JSON response, set `"id": {json.dumps(target_row.get('id'))}`."""
     else:
         row_context_section = f"""GOOGLE SHEET ROWS (find and process ONLY the first unscheduled row):
@@ -98,75 +101,66 @@ SELECTION INSTRUCTION:
 - Select ONLY the first sheet row where `scheduled` is empty or null.
 - Extract its `id`, `title`, `description`, `tags`."""
 
-    return f"""You are a world-class YouTube Shorts SEO & Viral Growth Strategist.
-This channel's live YouTube data has ALREADY been fetched for you below:
+    return f"""You are an elite viral YouTube Shorts & Instagram Reels growth strategist.
+Channel data and context have been fetched below:
 
 CHANNEL DETAILS:
 {json.dumps(channel_details)}
 
-RECENT / SCHEDULED VIDEOS ON THIS CHANNEL:
-{json.dumps(recent_videos)}
+RECENT UPLOADS ON THIS CHANNEL (DO NOT COPY OR REPEAT THESE TITLE FORMULAS):
+{json.dumps(recent_titles_sample, indent=2)}
 
 {row_context_section}
 
-TODAYS DATE: {current_ist}
+CURRENT IST TIME: {current_ist}
 
 ══════════════════════════════════════════════════════════════════════════════════
-GROWTH & METADATA OPTIMIZATION RULES (HIGH KEYWORDS + VIRAL ENGAGEMENT)
+VIRAL TITLE & CONTENT GENERATION RULES (CREATIVE, VARIED & HUMAN HOOKS)
 ══════════════════════════════════════════════════════════════════════════════════
 
-1. SELECTION:
-   - Use the designated target row data provided above.
-   - Extract its `id`, `title`, `description`, `tags`.
+1. ANTI-REPETITION & TITLE DIVERSITY (CRITICAL):
+   - NEVER repeat the same opening phrase (e.g. do NOT use "World's Tiniest..." or "Satisfying Tiny..." for every video).
+   - Analyze recent upload titles above and pick a FRESH, DISTINCT hook angle from the style matrix below:
+     • Style A (Sensory / Sizzle Hook): "The Sizzle On This Mini [Dish]! ASMR Cooking #shorts"
+     • Style B (Curiosity / Question Hook): "Would You Try Making [Dish] On A Micro Clay Stove? #shorts"
+     • Style C (Extreme Detail / Scale Hook): "Every Single Detail Of [Dish] In 1:12 Miniature! #shorts"
+     • Style D (Street Food Vibe Hook): "Midnight Mini Street Food: Crispy [Dish] Sizzle #shorts"
+     • Style E (Hypnotic / Relaxing Hook): "Oddly Relaxing [Dish] Preparation On Tiny Fire 🔥 #shorts"
+     • Style F (Crunch & Texture Hook): "Wait For That Golden [Dish] Crunch! ASMR #shorts"
+     • Style G (Challenge / Reaction Hook): "Cooking Authentic [Dish] For Ants?! Tiny Kitchen #shorts"
+   - Length: 50–70 characters. High punchiness, emotional trigger, exact dish name, and ends with "#shorts".
 
-2. VIRAL TITLE ENGINE (High CTR + Keywords + Emotional Hook):
-   - Rewrite the title into an irresistible, clickable YouTube Shorts title (50–70 characters total).
-   - FIRST 3–4 WORDS: Must be a powerful sensory/curiosity trigger, open loop, or question that hooks the viewer instantly on the Shorts feed (e.g., "Can You Hear That Crunch?", "World's Tiniest Crispy...", "Wait For The Golden Sizzle!", "Is This The Smallest...?", "Satisfying Tiny...").
-   - KEYWORD INJECTION: Naturally include high-search keywords like the dish name, "Miniature Cooking", "ASMR", and append "#shorts" at the end.
-   - Must be accurate to the dish/video content.
+2. ENGAGEMENT-BOOSTED DESCRIPTION (Multi-Layered Viral Structure):
+   - Layer 1 (Sensory Storytelling): 2–3 mouthwatering sentences describing the authentic sizzling aroma, spice pop, and micro cookware precision.
+   - Layer 2 (Search Keyword SEO): Natural injection of high-search phrases (e.g., "authentic miniature Indian cooking ASMR", "relaxing kitchen sounds", "satisfying tiny food preparation").
+   - Layer 3 (Comment Driving Question): Interactive question tailored specifically to the dish (e.g. "Rate this tiny [dish] from 1–10! 😋👇 What should we shrink next?").
+   - Layer 4 (Channel Subscribe CTA): "{subscribe_cta_example}"
+   - Layer 5 (Hashtags): 6–8 curated hashtags (#shorts #miniaturecooking #tinyfood #asmrcooking #indianfood #satisfying #foodie #[dishname]).
 
-3. ENGAGEMENT-BOOSTED DESCRIPTION (Multi-Layered SEO Structure):
-   - Layer 1 (Sensory Hook & Story): 2–3 vivid, mouthwatering sentences describing the authentic aromas, sizzling stone stove sounds, and miniature cooking precision.
-   - Layer 2 (SEO Keyword Density): Seamlessly weave in high-volume search phrases (e.g., "authentic miniature Indian cooking ASMR", "relaxing kitchen sounds", "satisfying tiny food preparation").
-   - Layer 3 (Comment-Driving Question): A specific, fun conversation starter to trigger the comment algorithm (e.g., "👉 Would you eat this in one single bite? Rate it 1–10 below! 👇 What dish should we shrink down next?").
-   - Layer 4 (Channel Subscribe CTA): Append a clean, high-converting subscribe call to action (e.g. "{subscribe_cta_example}").
-   - Layer 5 (Hashtags): 5–8 targeted hashtags at the very bottom (e.g., #shorts #miniaturecooking #tinyfood #asmrcooking #indianfood #satisfying #foodie).
+3. HIGH-REACH SEO TAGS:
+   - Merge the dish tags with high-intent keywords from: {seo_pool}.
+   - Return a clean array of 15–20 distinct tags (dish-specific, genre-specific, and broad Shorts tags).
 
-4. HIGH-REACH SEO TAGS (Search & Algorithmic Discovery):
-   - Merge the dish-specific tags from the sheet with 4–6 high-intent tags from the SEO POOL: {seo_pool}.
-   - Mix broad terms ("asmr", "shorts", "cooking", "satisfying"), niche terms ("miniature cooking", "tiny food", "mini kitchen", "tiny food asmr", "worlds smallest food"), and dish-specific terms ("miniature [dish]", "[dish] asmr", "crispy [dish]").
-   - Clean, trim whitespace, deduplicate case-insensitively, and return a clean array of 15–20 tags.
+4. PINNED FIRST COMMENT (Interactive Reply Catalyst):
+   - Short (under 160 characters), engaging question with 1 emoji to spark lively comment section discussions.
 
-5. PINNED FIRST COMMENT (Reply Multiplier):
-   - Write a short (under 180 characters), highly engaging pinned comment with exactly ONE emoji.
-   - Must be an interactive question or challenge that encourages viewers to reply (e.g., "What miniature dish should we cook next? Top voted comment wins! 👩‍🍳👇" or "Would you eat this in one tiny bite or save it? Drop your answer! 😋👇").
-
-6. SCHEDULING RULES (THE 2 BEST VIRAL PEAK TIMES):
-   - Slot A: 12:30 PM–01:00 PM IST (Lunchtime mobile browsing peak)
-   - Slot B: 06:30 PM–07:00 PM IST (Prime evening leisure & commute peak)
-   - Must be strictly in the FUTURE vs TODAYS DATE.
-   - Must maintain at least a 5 HOURS minimum spacing gap from existing videos in the recent videos list.
-   - Pick the FIRST available slot starting from today Slot A -> today Slot B -> tomorrow Slot A -> tomorrow Slot B...
+5. SCHEDULING (VIRAL PEAK SLOTS):
+   - Slot A: 12:30 PM IST (Lunch Peak)
+   - Slot B: 06:30 PM IST (Prime Evening Peak)
+   - Must be strictly in the future (>30 min from current time) and have at least 5 HOURS minimum spacing gap from recent videos.
 
 ══════════════════════════════════════════════════════════════════════════════════
-OUTPUT FORMAT (VALID JSON ONLY - NO MARKDOWN - NO CODE FENCES):
+OUTPUT FORMAT (STRICT VALID JSON ONLY - NO CODE FENCES - NO MARKDOWN):
 ══════════════════════════════════════════════════════════════════════════════════
 {{
-  "id": int,
-  "title": "World's Tiniest Crispy Masala Dosa! Miniature ASMR 🍳 #shorts",
+  "id": "{target_row.get('id') if target_row else 1}",
+  "title": "Distinctive Viral Title Tailored To The Dish #shorts",
   "description": "Sensory-rich description with keywords, engagement question, CTA, and #hashtags",
   "tags": ["miniature cooking", "tiny food", "asmr cooking", "indian food asmr", "shorts"],
-  "firstComment": "Which dish should we cook in miniature next? Drop your suggestion below! 👨‍🍳👇",
+  "firstComment": "What miniature dish should we cook next? Top voted comment wins! 👩‍🍳👇",
   "date": "YYYY-MM-DDTHH:MM:SS+05:30"
 }}
-
-If no unscheduled row exists, return {{"id": null, "title": null, "description": null, "tags": [], "firstComment": null, "date": null}}.
-- `description` must follow the subscribe CTA rule above.
-- `date` must contain ONLY the scheduled calendar date+time in format 'YYYY-MM-DDTHH:MM:SS+05:30', must always be strictly LATER than the current time, must respect the spacing rule, and must fall inside Slot A or Slot B — return only the string.
-- The date string MUST end with the +05:30 timezone offset suffix EVERY time, with no exceptions.
-- JSON must be syntactically valid.
-- Date is a string.
-- DATE must be Indian Standard Time, strictly inside Slot A or Slot B as defined above, strictly later than the current time, and must always end with +05:30."""
+- Date must always be formatted as 'YYYY-MM-DDTHH:MM:SS+05:30', strictly inside Slot A or Slot B, strictly in the future."""
 
 
 def _fetch_channel_data(channel: str) -> tuple[dict, list]:
@@ -310,12 +304,17 @@ def enrich_post_gemini(
     )
 
     # Step 5: Call Gemini
-    logger.info("Calling Gemini for channel %s enrichment", channel)
-    raw = _call_gemini(prompt)
-    logger.debug("Gemini raw output: %.500s", raw)
-
-    # Step 6: Parse JSON
-    result = _parse_gemini_json(raw)
+    logger.info("Calling Gemini (%s) for channel %s enrichment", settings.gemini_model, channel)
+    try:
+        raw = _call_gemini(prompt)
+        logger.debug("Gemini raw output: %.500s", raw)
+        result = _parse_gemini_json(raw)
+    except Exception as exc:
+        logger.error(
+            "Gemini enrichment failed for channel %s with model %s: %s",
+            channel, settings.gemini_model, exc, exc_info=True
+        )
+        raise
 
     # Validate required fields
     if result.get("id") is None and not target_post and not target_row_id:
@@ -325,22 +324,18 @@ def enrich_post_gemini(
     if result.get("id") is None and target_post:
         result["id"] = getattr(target_post, "sheet_row_id", None)
 
-    if not result.get("date"):
-        from backend.services.scheduler_logic import pick_next_slot
-        from backend.database import SessionLocal
-        with SessionLocal() as db_session:
+    # Validate and enforce authoritative future slot time
+    from backend.services.scheduler_logic import pick_next_slot
+    from backend.database import SessionLocal
+    with SessionLocal() as db_session:
+        try:
             slot = pick_next_slot(channel, db_session)
-        result["date"] = slot.strftime("%Y-%m-%dT%H:%M:%S+05:30")
-
-    # Enforce +05:30 suffix (safety net from n8n prompt rule)
-    date_str = result["date"]
-    if not date_str.endswith("+05:30"):
-        logger.warning("Gemini date missing +05:30, fixing: %s", date_str)
-        date_str = date_str.rstrip("Z").rstrip("+00:00") + "+05:30"
-        result["date"] = date_str
+            result["date"] = slot.strftime("%Y-%m-%dT%H:%M:%S+05:30")
+        except Exception as exc:
+            logger.warning("Could not pick next slot during Gemini enrichment: %s", exc)
 
     logger.info(
-        "Channel %s: Gemini scheduled id=%s at %s",
+        "Channel %s: Gemini enriched id=%s at %s",
         channel, result.get("id"), result.get("date"),
     )
     return result

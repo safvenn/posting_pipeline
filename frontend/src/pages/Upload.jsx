@@ -33,6 +33,8 @@ export default function Upload() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [progress, setProgress] = useState('')
+  const [uploadPercent, setUploadPercent] = useState(null)
+  const [sheetWarning, setSheetWarning] = useState('')
   const [videoDuration, setVideoDuration] = useState(null)
   const [videoReady, setVideoReady] = useState(false)
 
@@ -75,15 +77,20 @@ export default function Upload() {
   }, [file])
 
   async function loadSheetRows() {
+    setSheetWarning('')
     try {
       const res = await client.get(`/posts/sheet-rows?channel=${channel}`)
-      if (res.data?.found && Array.isArray(res.data.rows)) {
+      if (res.data?.found && Array.isArray(res.data.rows) && res.data.rows.length > 0) {
         setSheetRows(res.data.rows)
       } else {
         setSheetRows([])
+        if (res.data?.message) {
+          setSheetWarning(`Google Sheets connection warning: ${res.data.message}`)
+        }
       }
     } catch (e) {
       setSheetRows([])
+      setSheetWarning('Google Sheets unreachable. Auto-detection will operate offline.')
     }
   }
 
@@ -147,7 +154,8 @@ export default function Upload() {
 
     setError('')
     setLoading(true)
-    setProgress('Uploading video and initializing watermark removal pipeline...')
+    setUploadPercent(0)
+    setProgress('Uploading video to server...')
 
     const fd = new FormData()
     fd.append('video', file)
@@ -166,14 +174,27 @@ export default function Upload() {
     }
 
     try {
-      const res = await client.post('/posts', fd)
-      setProgress('Upload complete! Redirecting to post detail...')
+      const res = await client.post('/posts', fd, {
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+            setUploadPercent(percentCompleted)
+            if (percentCompleted < 100) {
+              setProgress(`Uploading: ${percentCompleted}% (${fmtSize(progressEvent.loaded)} of ${fmtSize(progressEvent.total)})`)
+            } else {
+              setProgress('Upload completed. Initializing pipeline...')
+            }
+          }
+        },
+      })
+      setProgress('Video ingested! Redirecting to post detail...')
       setTimeout(() => {
         navigate(`/post/${res.data.id}`)
-      }, 700)
+      }, 600)
     } catch (err) {
       setError(formatErrorMessage(err))
       setProgress('')
+      setUploadPercent(null)
       setLoading(false)
     }
   }
@@ -397,10 +418,16 @@ export default function Upload() {
               </div>
               {sheetPreview?.scheduled && (
                 <span className="badge badge-warning" style={{ fontSize: 10.5 }}>
-                  Scheduled in Sheet: {sheetPreview.scheduled}
+                  Already Scheduled
                 </span>
               )}
             </div>
+
+            {sheetPreview?.scheduled && (
+              <div style={{ padding: '8px 12px', borderRadius: 6, backgroundColor: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.3)', color: '#f59e0b', fontSize: 11.5, marginBottom: 12 }}>
+                ℹ️ <strong>Note:</strong> Row #{sheetPreview.id} was already scheduled ({sheetPreview.scheduled}). Uploading this video will automatically create a <strong>new row with a fresh ID</strong> in your Google Sheet with these details.
+              </div>
+            )}
 
             {sheetLoading ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12 }}>
@@ -453,6 +480,15 @@ export default function Upload() {
             )}
           </div>
 
+          {sheetWarning && (
+            <div className="card" style={{ marginTop: 16, padding: '10px 14px', backgroundColor: 'rgba(245, 185, 66, 0.08)', border: '1px solid rgba(245, 185, 66, 0.25)', color: 'var(--warning)', fontSize: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+                <AlertCircle size={14} /> Google Sheets Notice
+              </div>
+              <div style={{ marginTop: 3, opacity: 0.9 }}>{sheetWarning}</div>
+            </div>
+          )}
+
           {error && (
             <div className="error-pill" style={{ marginTop: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
@@ -463,10 +499,30 @@ export default function Upload() {
           )}
 
           {progress && (
-            <div className="success-pill" style={{ marginTop: 16 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span className="spinner" /> {progress}
+            <div style={{ marginTop: 16, backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: uploadPercent !== null ? 8 : 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 500 }}>
+                  <span className="spinner" /> {progress}
+                </div>
+                {uploadPercent !== null && (
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent-primary)' }}>
+                    {uploadPercent}%
+                  </span>
+                )}
               </div>
+              {uploadPercent !== null && (
+                <div style={{ width: '100%', height: 6, backgroundColor: 'var(--bg-subtle)', borderRadius: 4, overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      height: '100%',
+                      width: `${uploadPercent}%`,
+                      backgroundColor: 'var(--accent-primary)',
+                      borderRadius: 4,
+                      transition: 'width 0.2s ease-in-out',
+                    }}
+                  />
+                </div>
+              )}
             </div>
           )}
 

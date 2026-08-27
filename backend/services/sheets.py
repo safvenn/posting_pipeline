@@ -14,7 +14,6 @@ update_row_after_upload()   — write scheduled, upload id, enriched title back 
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 from typing import Optional
 
 import gspread
@@ -30,17 +29,42 @@ SCOPES = [
 ]
 
 
-@lru_cache(maxsize=1)
+import time as _time
+
+_GSPREAD_CLIENT: "gspread.Client | None" = None
+_GSPREAD_CREATED_AT: float = 0.0
+_GSPREAD_TTL_SECONDS: float = 600.0  # 10 minutes
+
+
+def invalidate_gspread_client() -> None:
+    """Force the next call to _gc() to create a fresh gspread client.
+    Call this after updating Google Sheets service account credentials
+    without restarting the app.
+    """
+    global _GSPREAD_CLIENT, _GSPREAD_CREATED_AT
+    _GSPREAD_CLIENT = None
+    _GSPREAD_CREATED_AT = 0.0
+    logger.info("gspread client cache invalidated — next call will re-authenticate")
+
+
 def _gc() -> gspread.Client:
-    """Cached gspread client using service account credentials."""
-    sa_val = settings.google_sheets_service_account_json.strip()
-    if sa_val.startswith("{"):
-        import json
-        info = json.loads(sa_val)
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-    else:
-        creds = Credentials.from_service_account_file(sa_val, scopes=SCOPES)
-    return gspread.authorize(creds)
+    """TTL-cached gspread client using service account credentials.
+    Re-authenticates automatically every 10 minutes or when invalidated.
+    """
+    global _GSPREAD_CLIENT, _GSPREAD_CREATED_AT
+    now = _time.monotonic()
+    if _GSPREAD_CLIENT is None or (now - _GSPREAD_CREATED_AT) > _GSPREAD_TTL_SECONDS:
+        sa_val = settings.google_sheets_service_account_json.strip()
+        if sa_val.startswith("{"):
+            import json
+            info = json.loads(sa_val)
+            creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        else:
+            creds = Credentials.from_service_account_file(sa_val, scopes=SCOPES)
+        _GSPREAD_CLIENT = gspread.authorize(creds)
+        _GSPREAD_CREATED_AT = now
+        logger.debug("gspread client (re-)authenticated")
+    return _GSPREAD_CLIENT
 
 
 import csv
@@ -205,3 +229,64 @@ def update_row_after_upload(
         "Sheet updated: channel=%s id=%s scheduled=%s upload_id=%s",
         channel, row_id, scheduled_at, upload_id,
     )
+
+
+def is_row_scheduled(channel: str, row_id: int | str) -> bool:
+    """Return True if row has non-empty 'scheduled' or 'upload id'."""
+    row = get_row_by_id(channel, row_id)
+    if not row:
+        return False
+    sched = str(row.get("scheduled", "")).strip()
+    upload = str(row.get("upload id", "") or row.get("upload_id", "")).strip()
+    return bool(sched or upload)
+
+
+def append_new_row(channel: str, title: str, description: str = "", tags: str = "", prompt: str = "") -> dict:
+    """
+    Append a new row to the channel's Google Sheet with a clean new ID.
+    Returns the newly created row dict.
+    """
+    ws = _sheet(channel)
+    records = ws.get_all_records(default_blank="")
+
+    # Determine highest numeric ID or next sequence
+    max_id = 0
+    for r in records:
+        raw_id = str(r.get("id", "")).strip()
+        if raw_id.isdigit():
+            max_id = max(max_id, int(raw_id))
+    new_id = max_id + 1 if max_id > 0 else len(records) + 1
+
+    headers = [h.lower().strip() for h in ws.row_values(1)]
+    if not headers:
+        headers = ["id", "title", "description", "prompt", "tags", "scheduled", "upload id"]
+
+    row_vals = []
+    for h in headers:
+        if h == "id":
+            row_vals.append(str(new_id))
+        elif h == "title":
+            row_vals.append(title)
+        elif h == "description":
+            row_vals.append(description)
+        elif h == "prompt":
+            row_vals.append(prompt)
+        elif h == "tags":
+            row_vals.append(tags)
+        elif h in ("scheduled", "upload id", "upload_id"):
+            row_vals.append("")
+        else:
+            row_vals.append("")
+
+    ws.append_row(row_vals)
+    logger.info("Appended new row to Google Sheet: channel=%s new_id=%s title=%s", channel, new_id, title)
+    return {
+        "id": str(new_id),
+        "title": title,
+        "description": description,
+        "tags": tags,
+        "prompt": prompt,
+        "scheduled": "",
+        "upload id": "",
+    }
+

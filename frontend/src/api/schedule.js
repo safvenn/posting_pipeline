@@ -6,3 +6,7 @@ export const getSchedule = (days = 7) =>
 export const rescheduleSlot = (data) =>
   client.post('/schedule/reschedule', data).then(r => r.data)
 
+export const clearFailedSchedules = () =>
+  client.post('/schedule/clear-failed').then(r => r.data)
+
+

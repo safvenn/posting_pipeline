@@ -77,6 +77,17 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
+    # Backend public URL (Render / custom domain / tunnel for serving media to Instagram Graph API)
+    backend_public_url: str = os.getenv("RENDER_EXTERNAL_URL", os.getenv("BACKEND_PUBLIC_URL", ""))
+
+    # CORS — comma-separated list of allowed frontend origins
+    # Example: http://localhost:5173,https://mypipeline.vercel.app
+    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
+
+    # API key for bearer-token auth on all /api/* routes (except /api/health)
+    # Generate a strong random value and set in .env: API_KEY=<random-64-char-hex>
+    api_key: str = ""
+
     # ASMR Content Workflow
     asmr_dry_run: bool = False
     asmr_schedule_cron: str = "0 9 * * *"

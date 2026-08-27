@@ -157,6 +157,7 @@ class ScheduleSlot(BaseModel):
     slot_time_formatted: Optional[str] = None
     instagram_post_url: Optional[str] = None
     instagram_status: Optional[str] = None
+    instagram_enabled: bool = False
 
     @field_serializer("scheduled_at", when_used="json-unless-none")
     def serialize_datetime(self, dt: Optional[datetime]) -> Optional[str]:

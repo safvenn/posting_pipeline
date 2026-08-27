@@ -10,6 +10,12 @@ const client = axios.create({
   timeout: 180000,
 })
 
+// Inject API key as Bearer token on every request (if configured)
+const apiKey = import.meta.env.VITE_API_KEY
+if (apiKey) {
+  client.defaults.headers.common['Authorization'] = `Bearer ${apiKey}`
+}
+
 export function formatErrorMessage(err) {
   if (!err) return 'An unexpected error occurred.'
   const detail = err.response?.data?.detail
