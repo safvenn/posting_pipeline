@@ -184,7 +184,7 @@ def _upload_single_post(post: Post, db) -> bool:
     try:
         video_id = _do_upload(yt, post, video_path)
         post.youtube_video_id = video_id
-        _set_status(db, post, "uploaded")
+        _set_status(db, post, "scheduled")
         _sheet_writeback(post.channel, post, video_id)
 
         # Multi-platform: Trigger Instagram Reels publishing if enabled for this channel

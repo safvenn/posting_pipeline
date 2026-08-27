@@ -375,7 +375,7 @@ export default function PostDetail() {
                           {post.instagram_status === 'pending' ? '⏳ Publishing...' : 'Not Published / Disabled'}
                         </span>
                       )}
-                      {['uploaded', 'cleaned', 'failed'].includes(post.status) && (
+                      {['scheduled', 'uploaded', 'cleaned', 'failed'].includes(post.status) && (
                         <button
                           type="button"
                           className="btn btn-secondary btn-sm"

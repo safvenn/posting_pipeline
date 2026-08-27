@@ -97,7 +97,7 @@ def comment_one_post(post_id: int) -> None:
         buffer = timedelta(minutes=COMMENT_BUFFER_MINUTES)
 
         # Verify post is ready for commenting
-        if post.status != "uploaded" or post.first_comment_posted:
+        if post.status not in ["scheduled", "uploaded"] or post.first_comment_posted:
             return
         if not post.youtube_video_id or not post.scheduled_at:
             return
@@ -111,7 +111,6 @@ def comment_one_post(post_id: int) -> None:
             post.status = "commented"
             post.error_message = None
         else:
-            # Keep status=uploaded, video is live and that matters more
             existing_err = post.error_message or ""
             if "comment" not in existing_err:
                 post.error_message = (
@@ -130,7 +129,7 @@ def comment_one_post(post_id: int) -> None:
 
 
 def get_next_commentable_post_id() -> int | None:
-    """Return the ID of the oldest uploaded post ready for commenting, or None."""
+    """Return the ID of the oldest scheduled/uploaded post ready for commenting, or None."""
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -139,7 +138,7 @@ def get_next_commentable_post_id() -> int | None:
         post = (
             db.query(Post.id)
             .filter(
-                Post.status == "uploaded",
+                Post.status.in_(["scheduled", "uploaded"]),
                 Post.first_comment_posted == False,
                 Post.youtube_video_id.isnot(None),
                 Post.scheduled_at.isnot(None),

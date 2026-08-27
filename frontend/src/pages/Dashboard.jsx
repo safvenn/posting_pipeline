@@ -27,7 +27,6 @@ const STATUSES = [
   { id: 'cleaning', label: 'Cleaning' },
   { id: 'cleaned', label: 'Cleaned' },
   { id: 'scheduled', label: 'Scheduled' },
-  { id: 'uploaded', label: 'Uploaded' },
   { id: 'commented', label: 'Commented' },
   { id: 'failed', label: 'Failed' },
 ]
@@ -48,8 +47,8 @@ function fmtTime(isoStr) {
 function StatOverview({ posts }) {
   const total = posts.length
   const inPipeline = posts.filter(p => ['queued', 'cleaning', 'cleaned'].includes(p.status)).length
-  const scheduled = posts.filter(p => p.status === 'scheduled').length
-  const completed = posts.filter(p => ['uploaded', 'commented'].includes(p.status)).length
+  const scheduled = posts.filter(p => ['scheduled', 'uploaded'].includes(p.status)).length
+  const completed = posts.filter(p => p.status === 'commented').length
   const failed = posts.filter(p => p.status === 'failed').length
 
   return (

@@ -273,6 +273,8 @@ def _get_channel_name_map(db: Session) -> dict[str, str]:
 
 def _to_post_read(post: Post, name_map: dict[str, str]) -> PostRead:
     read = PostRead.model_validate(post)
+    if read.status == "uploaded":
+        read.status = "scheduled"
     read.channel_display_name = name_map.get(post.channel, post.channel.replace("_", " ").title())
     return read
 
@@ -289,7 +291,10 @@ def list_posts(
     if channel and channel != "all":
         query = query.filter(Post.channel == channel)
     if status and status != "all":
-        query = query.filter(Post.status == status)
+        if status == "scheduled":
+            query = query.filter(Post.status.in_(["scheduled", "uploaded"]))
+        else:
+            query = query.filter(Post.status == status)
     total = query.count()
     items = query.order_by(Post.created_at.desc()).offset(skip).limit(limit).all()
     name_map = _get_channel_name_map(db)

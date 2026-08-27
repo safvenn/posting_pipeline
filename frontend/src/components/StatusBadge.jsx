@@ -7,7 +7,7 @@ const STATUS_CONFIG = {
   cleaning:  { label: 'Cleaning',  dot: '◌' },
   cleaned:   { label: 'Cleaned',   dot: '●' },
   scheduled: { label: 'Scheduled', dot: '◉' },
-  uploaded:  { label: 'Uploaded',  dot: '▲' },
+  uploaded:  { label: 'Scheduled', dot: '◉' },
   commented: { label: 'Commented', dot: '✓' },
   failed:    { label: 'Failed',    dot: '✕' },
 }
@@ -16,10 +16,11 @@ function StatusBadgeComponent({ status, post, showTiming = false }) {
   const cfg = STATUS_CONFIG[status] || { label: status, dot: '?' }
   const isCleaning = status === 'cleaning'
   const timing = (post && showTiming && !isCleaning) ? getJobTiming(post) : null
+  const badgeClass = status === 'uploaded' ? 'badge-scheduled' : `badge-${status}`
 
   return (
     <span
-      className={`badge badge-${status}`}
+      className={`badge ${badgeClass}`}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
