@@ -298,9 +298,25 @@ def remove_watermark(post_id: int, db: Session | None = None) -> None:
         _check_gwr_json(stdout, post_id)
         logger.info("Post %s: gwr done in %.1fs", post_id, elapsed)
 
+        # ---- Step 2.5: Enforce 1080p Full HD video quality on worker via FFmpeg ----
+        remote_1080p = f"{settings.gwr_tmp_dir}/clean-1080p-{job_id}.mp4"
+        ffmpeg_1080p_cmd = (
+            f'ffmpeg -y -i "{remote_clean}" '
+            f'-vf "scale=\'if(gt(ih,iw),1080,-2)\':\'if(gt(ih,iw),-2,1080)\':flags=lanczos,format=yuv420p" '
+            f'-c:v libx264 -preset medium -crf 17 -b:v 25M -maxrate 35M -bufsize 50M '
+            f'-c:a aac -b:a 192k -movflags +faststart "{remote_1080p}"'
+        )
+        logger.info("Post %s: enhancing video to 1080p Full HD quality on worker", post_id)
+        ff_code, ff_out, ff_err = _ssh_exec(ssh, ffmpeg_1080p_cmd, timeout=600)
+        download_target = remote_1080p if ff_code == 0 else remote_clean
+        if ff_code == 0:
+            logger.info("Post %s: 1080p video enhancement complete", post_id)
+        else:
+            logger.warning("Post %s: 1080p ffmpeg step failed (falling back to gwr output): %s", post_id, ff_err)
+
         # ---- Step 3: Download clean video ----
-        logger.info("Post %s: SFTP download ← %s", post_id, remote_clean)
-        sftp.get(remote_clean, str(local_clean_path))
+        logger.info("Post %s: SFTP download ← %s", post_id, download_target)
+        sftp.get(download_target, str(local_clean_path))
         sftp.close()
 
         # Verify downloaded file is non-empty
@@ -308,7 +324,7 @@ def remove_watermark(post_id: int, db: Session | None = None) -> None:
             raise RuntimeError(f"Downloaded clean video is empty: {local_clean_path}")
 
         # ---- Step 4: Cleanup remote files ----
-        code, _, err = _ssh_exec(ssh, f"rm -f {remote_input} {remote_clean}")
+        code, _, err = _ssh_exec(ssh, f"rm -f {remote_input} {remote_clean} {remote_1080p}")
         if code != 0:
             logger.warning("Post %s: remote cleanup failed (non-fatal): %s", post_id, err)
         else:
@@ -345,9 +361,9 @@ def remove_watermark(post_id: int, db: Session | None = None) -> None:
         _active_jobs.pop(post_id, None)
 
         # Remote file cleanup on error
-        if ssh and remote_input and remote_clean:
+        if ssh and remote_input:
             try:
-                _ssh_exec(ssh, f"rm -f {remote_input} {remote_clean}")
+                _ssh_exec(ssh, f"rm -f {remote_input} {remote_clean} {settings.gwr_tmp_dir}/clean-1080p-{job_id}.mp4")
             except Exception:
                 pass
 
