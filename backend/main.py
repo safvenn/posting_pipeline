@@ -17,6 +17,7 @@ from backend.config import settings
 from backend.database import Base, engine
 from backend.routers import channels, posts, schedule
 from backend.routers.asmr import router as asmr_router, food_router as asmr_food_router
+from backend.routers.extension import router as extension_router
 from backend.jobs.job_queue import run_serial_queue
 from backend.jobs.asmr_workflow_job import run_asmr_workflow_job
 
@@ -150,6 +151,9 @@ def create_app() -> FastAPI:
 
     # Public OAuth callback router (no auth required)
     app.include_router(channels.public_router)
+
+    # Public extension ingest — no auth (local/self-hosted only)
+    app.include_router(extension_router)
 
     # Routers (all protected by api-key dependency)
     app.include_router(posts.router,    dependencies=[Depends(require_api_key)])
