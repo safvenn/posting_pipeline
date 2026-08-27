@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy.orm import Session
 
@@ -147,3 +147,68 @@ async def ingest_from_extension(body: ExtensionIngestRequest):
         status="queued",
         message=f"Video queued as post #{post_id}. Pipeline will process within 30 seconds.",
     )
+
+
+@router.post("/upload", response_model=ExtensionIngestResponse)
+async def upload_from_extension(
+    channel: str = Form(...),
+    title: str = Form(...),
+    description: Optional[str] = Form(""),
+    tags: Optional[str] = Form(""),
+    sheet_row_id: Optional[str] = Form(None),
+    scheduled_at: Optional[str] = Form(None),
+    video: UploadFile = File(...),
+):
+    """
+    Accepts video file directly from the browser extension as multipart/form-data.
+    Bypasses server-side download 401 issues since the browser downloads the blob using its session cookies.
+    """
+    title = (title or "").strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="title is required")
+    channel = (channel or "").strip().lower()
+    if not channel:
+        raise HTTPException(status_code=422, detail="channel is required")
+
+    sched: Optional[datetime] = None
+    if scheduled_at:
+        try:
+            sched = datetime.fromisoformat(scheduled_at)
+            if sched.tzinfo is None:
+                sched = sched.replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Invalid scheduled_at: {scheduled_at}")
+
+    upload_dir = settings.upload_path()
+    filename = f"flow_{uuid.uuid4().hex}.mp4"
+    dest = upload_dir / filename
+
+    # Save uploaded file
+    with open(dest, "wb") as f:
+        while chunk := await video.read(1024 * 256):
+            f.write(chunk)
+
+    with SessionLocal() as db:
+        post = Post(
+            channel=channel,
+            title=title,
+            description=description or "",
+            tags=tags or "",
+            video_path=str(dest),
+            status="queued",
+            scheduled_at=sched,
+            sheet_row_id=sheet_row_id or None,
+        )
+        db.add(post)
+        db.commit()
+        db.refresh(post)
+        post_id = post.id
+
+    logger.info("Extension direct upload: created Post id=%d for channel=%s", post_id, channel)
+
+    return ExtensionIngestResponse(
+        post_id=post_id,
+        status="queued",
+        message=f"Video queued as post #{post_id}. Pipeline will process within 30 seconds.",
+    )
+
