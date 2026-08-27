@@ -13,7 +13,7 @@ import uuid
 
 from backend.database import get_db
 from backend.models import ChannelConfig
-from backend.services.youtube_auth import get_youtube_client, get_auth_url, exchange_code, revoke_token
+from backend.services.youtube_auth import get_youtube_client
 from backend.schemas import (
     ChannelCreate,
     ChannelUpdate,
