@@ -304,7 +304,19 @@ export default function PostDetail() {
             )}
             <DetailRow label="Original Title" value={post.title} />
             <DetailRow label="AI Enriched Title" value={post.enriched_title} />
-            <DetailRow label="Scheduled (IST)" value={fmtTime(post.scheduled_at)} mono />
+            <DetailRow
+              label="Google Sheet Row"
+              value={
+                post.sheet_row_id ? (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--info)', fontWeight: 600 }}>
+                    📊 Row #{post.sheet_row_id} (Synced with Google Sheet)
+                  </span>
+                ) : (
+                  <span style={{ color: 'var(--text-muted)' }}>Auto-assigned on upload</span>
+                )
+              }
+            />
+            <DetailRow label="Scheduled Time (IST)" value={fmtTime(post.scheduled_at)} mono />
             <DetailRow label="Created At" value={fmtTime(post.created_at)} mono />
             <DetailRow label="Last Updated" value={fmtTime(post.updated_at)} mono />
             <DetailRow
