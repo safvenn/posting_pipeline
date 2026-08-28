@@ -470,7 +470,7 @@ def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
                     yt_updated = True
                     logger.info("Successfully updated YouTube video %s publishAt to %s on channel %s", video_id_to_update, pub_iso, channel_key)
             else:
-                yt_error_msg = f"Video not found on YouTube under channel '{channel_key}'"
+                yt_error_msg = f"Video not yet uploaded to YouTube — will upload automatically before scheduled time on channel '{channel_key}'"
         except Exception as exc:
             yt_error_msg = _format_youtube_error(exc)
             logger.warning("Could not update YouTube publishAt for %s: %s", video_id_to_update, exc)

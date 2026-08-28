@@ -348,12 +348,20 @@ def _do_upload(yt, post: Post, video_path: str) -> str:
     else:
         publish_at_iso = None
 
-    status_body = {
+    # Build status body — always upload as private+publishAt
+    # YouTube auto-publishes at publishAt time. NEVER upload as public directly.
+    # If no scheduled_at: upload as private (no publishAt) — user must set time manually.
+    status_body: dict = {
         "privacyStatus": "private",
         "selfDeclaredMadeForKids": False,
     }
     if publish_at_iso:
         status_body["publishAt"] = publish_at_iso
+    else:
+        logger.warning(
+            "Post %s has no scheduled_at — uploading as private (no auto-publish time set)",
+            post.id,
+        )
 
     body = {
         "snippet": {
@@ -442,15 +450,19 @@ def _schedule_cleaned_posts(channel: str, db) -> None:
 
 
 def _upload_due_posts(channel: str, db) -> None:
-    now = datetime.now(timezone.utc)
+    """Upload all scheduled posts that do not yet have a YouTube video ID.
+    Posts upload immediately after scheduling — they upload as private+publishAt
+    so YouTube auto-publishes at the correct time. We do NOT wait until scheduled_at
+    has passed (that would be too late).
+    """
     due_posts = (
         db.query(Post)
         .filter(
             Post.channel == channel,
             Post.status == "scheduled",
-            Post.scheduled_at <= now,
+            Post.youtube_video_id.is_(None),  # not yet uploaded
         )
-        .order_by(Post.scheduled_at.asc())
+        .order_by(Post.created_at.asc())
         .all()
     )
     if not due_posts:

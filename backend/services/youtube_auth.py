@@ -82,17 +82,17 @@ def get_youtube_client(channel: str):
 
 
 def is_quota_error(exc: Exception) -> bool:
-    """Detect YouTube 403/429 quota errors distinctly from real bugs."""
-    msg = str(exc).lower()
+    """Detect YouTube API quota exhaustion errors. Does NOT match auth/permission 403 errors."""
+    s = str(exc)
     return (
-        "quotaExceeded" in str(exc)
-        or "dailyLimitExceeded" in str(exc)
-        or "rateLimitExceeded" in str(exc)
-        or "403" in str(exc)
-        or "429" in str(exc)
+        "quotaExceeded" in s
+        or "dailyLimitExceeded" in s
+        or "rateLimitExceeded" in s
+        or "userRateLimitExceeded" in s
+        or "429" in s
     )
 
 
 def quota_error_message(exc: Exception) -> str:
     """Return a standardised quota error message for the dashboard."""
-    return f"quota exceeded: {exc}"
+    return f"YouTube API quota exceeded (10,000 units/day limit): {exc}"
