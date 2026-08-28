@@ -337,6 +337,76 @@ def clear_failed_posts(db: Session = Depends(get_db)):
     return {"message": f"Cleared {count} failed posts", "count": count}
 
 
+@router.get("/queue-status", status_code=200)
+def get_queue_status(db: Session = Depends(get_db)):
+    """
+    Live diagnostic: shows exactly what the pipeline is doing right now.
+    Use this to diagnose stuck-in-queue issues without reading Render logs.
+    """
+    from backend.jobs.cleaning_job import _in_progress as cleaning_in_progress
+    from backend.config import settings
+    from pathlib import Path
+
+    # Status counts
+    all_posts = db.query(Post).all()
+    by_status: dict[str, list] = {}
+    for p in all_posts:
+        by_status.setdefault(p.status, []).append(p.id)
+
+    # Active cleaning threads
+    active_cleaning = list(cleaning_in_progress)
+
+    # SSH config check
+    ssh_ok = bool(settings.worker_ssh_host and settings.worker_ssh_host.strip())
+
+    # Check video files exist for queued posts
+    queued_posts = db.query(Post).filter(Post.status == "queued").order_by(Post.created_at.asc()).all()
+    queued_details = []
+    for p in queued_posts:
+        file_ok = bool(p.video_path and Path(p.video_path).exists())
+        queued_details.append({
+            "id": p.id,
+            "title": (p.title or "")[:60],
+            "video_file_exists": file_ok,
+            "video_path": p.video_path,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        })
+
+    # Next actionable posts
+    from backend.jobs.upload_job import get_next_uploadable_post_id
+    from backend.jobs.comment_job import get_next_commentable_post_id
+    from backend.jobs.instagram_job import get_next_instagram_publishable_post_id
+
+    return {
+        "ssh_configured": ssh_ok,
+        "ssh_host": settings.worker_ssh_host or "(not set)",
+        "active_cleaning_post_ids": active_cleaning,
+        "status_counts": {k: len(v) for k, v in by_status.items()},
+        "queued_posts": queued_details,
+        "next_uploadable_id": get_next_uploadable_post_id(),
+        "next_commentable_id": get_next_commentable_post_id(),
+        "next_instagram_id": get_next_instagram_publishable_post_id(),
+        "diagnosis": _diagnose_queue(ssh_ok, active_cleaning, queued_details, by_status),
+    }
+
+
+def _diagnose_queue(ssh_ok: bool, active_cleaning: list, queued_details: list, by_status: dict) -> str:
+    """Return a human-readable one-liner explaining queue state."""
+    if not ssh_ok:
+        return "❌ WORKER_SSH_HOST not set in environment — all queued posts will fail. Set it in Render env vars."
+    if active_cleaning:
+        return f"⏳ Cleaning post(s) {active_cleaning} via SSH/gwr (takes 2-5 min) — this is normal."
+    missing_files = [p for p in queued_details if not p["video_file_exists"]]
+    if missing_files:
+        ids = [p["id"] for p in missing_files]
+        return f"❌ Post(s) {ids} have missing video files (Render ephemeral disk reset?). Mark failed and re-upload."
+    if queued_details:
+        return f"✅ {len(queued_details)} post(s) queued, SSH configured — cleaning will start on next 30s scheduler tick."
+    if by_status.get("cleaned"):
+        return f"⏳ {len(by_status['cleaned'])} cleaned post(s) waiting for enrich/upload on next tick."
+    return "✅ Queue is idle — nothing to process."
+
+
 @router.post("/reset-stuck", status_code=200)
 def reset_stuck_posts(db: Session = Depends(get_db)):
     """
