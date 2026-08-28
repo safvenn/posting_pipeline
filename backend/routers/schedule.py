@@ -458,21 +458,15 @@ def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
                 else:
                     update_body = {
                         "id": video_id_to_update,
-                        "snippet": {
-                            "title": snippet_obj.get("title", post.enriched_title or post.title if post else "Shorts"),
-                            "description": snippet_obj.get("description", post.enriched_description or post.description if post else ""),
-                            "tags": snippet_obj.get("tags", []),
-                            "categoryId": snippet_obj.get("categoryId") or "22",
-                        },
                         "status": {
                             "privacyStatus": "private",
                             "publishAt": pub_iso,
-                            "selfDeclaredMadeForKids": status_obj.get("selfDeclaredMadeForKids", False),
-                            "embeddable": status_obj.get("embeddable", True),
-                            "publicStatsViewable": status_obj.get("publicStatsViewable", True),
+                            "selfDeclaredMadeForKids": bool(status_obj.get("selfDeclaredMadeForKids", False)),
+                            "embeddable": bool(status_obj.get("embeddable", True)),
+                            "publicStatsViewable": bool(status_obj.get("publicStatsViewable", True)),
                         },
                     }
-                    yt.videos().update(part="snippet,status", body=update_body).execute()
+                    yt.videos().update(part="status", body=update_body).execute()
                     yt_updated = True
                     logger.info("Successfully updated YouTube video %s publishAt to %s on channel %s", video_id_to_update, pub_iso, channel_key)
             else:
