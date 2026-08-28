@@ -1,5 +1,78 @@
 # Fix Plan — YouTube Auto Pipeline (posting_pipeline)
-Last updated: 2026-08-28T10:14:00+05:30 by Antigravity (Gemini)
+Last updated: 2026-08-28T10:24:00+05:30 by Antigravity (Gemini)
+
+## Status Legend
+- [ ] Not started
+- [~] In progress (see notes)
+- [x] Done — verified
+- [!] Blocked (see notes)
+
+## Priority 1 — Security
+- [x] CORS allowlist — explicit origin list in `backend/main.py` (never wildcard)
+- [x] Auth middleware — bearer token `require_api_key` on all `/api/*` routers
+- [x] Rotate leaked credentials — `.env` and `service_account.json` in `.gitignore`, not tracked
+
+## Priority 2 — Functional Bugs
+- [x] Fix GEMINI_MODEL invalid name — changed to `gemini-2.0-flash` in `config.py`; new `google-genai` SDK added with legacy fallback
+- [x] MIME validation on upload endpoint — `_ALLOWED_MIME_TYPES` set in `posts.py`
+- [x] gspread client cache refresh — TTL 600s + `invalidate_gspread_client()` in `sheets.py`
+- [x] ASMR route namespace consistency — routers registered in `main.py`
+- [x] Jobs stuck in `cleaned` — single-step queue, no while-True loop
+- [x] Jobs stuck in `queued` — SSH cleaning in background thread; pre-flight SSH/file checks mark failed fast
+- [x] Sheet updated too early — only written after confirmed `youtube_video_id`
+- [x] Empty `video_id` guard — `_upload_single_post` fails post if YouTube returns blank ID
+- [x] Instagram publishes too early — `instagram_job.py` triggers at `scheduled_at + 5 min`
+- [x] SSH cleaning blocks queue lock 2-5 min — background thread, lock released immediately
+
+## Priority 3 — UI/UX
+- [x] Catch-all 404 route — `<Route path="*" element={<NotFound />} />` in `App.jsx`
+- [x] Reset Stuck button — shows on Dashboard when `cleaning`/`cleaned` posts exist
+- [x] Delete scheduled video — `DELETE /api/schedule/delete` removes from DB + YouTube Studio
+- [x] Upload progress bar — `onUploadProgress` + animated bar in `Upload.jsx` (lines 210, 570-582)
+- [x] Mobile table responsiveness — `overflowX:auto` + `minWidth:680` on table container in `Dashboard.jsx`
+- [x] Keyboard-accessible table rows — `tabIndex={0}` + `onKeyDown` Enter/Space on all rows
+- [x] Fix "Processed" stat definition — label changed to "Done (Commented)" with tooltip
+- [x] Visible warning on Sheets fallback — `sheetWarning` state shown as yellow alert in `Upload.jsx`
+
+## Priority 4 — Extension (Chrome)
+- [x] Extension background upload — `background.js` rewritten: streaming download/upload, `chrome.alarms` keepalive, retry x3, job tracking via `_jobs` map
+- [x] Extension content.js — updated `executeModalSubmit` to poll `GET_JOB_STATUS` every 1.5s; live progress bar + elapsed timer; modal stays open during background job; fallback for old SW
+
+## Priority 5 — Ops / Deploy
+- [x] Queue diagnostic endpoint — `GET /api/posts/queue-status` returns SSH config, file existence, active threads, plain-English diagnosis
+- [x] 1080p quality on SSH worker — FFmpeg step after gwr in `watermark.py`
+- [x] Instagram scheduled publishing — `instagram_job.py` APScheduler every 60s
+- [x] Gemini model name — fixed to `gemini-2.0-flash`; `google-genai>=1.0.0` in `requirements.txt`
+- [!] Render disk persistence — uploaded videos lost on restart (ephemeral disk). BLOCKED: needs Render paid plan for persistent disk, or AWS S3 bucket + presigned URL upload. Decision needed from user.
+
+## Session Log
+
+### 2026-08-28T04:00:00+05:30 — Antigravity (Gemini)
+- Worked on: Schedule date fix, "uploaded" status removal from UI, deploy error fix
+- Changed files: `scheduler_logic.py`, `ScheduleCalendar.jsx`, `main.py`, multiple routers
+- Verified how: deployed to Render, checked logs
+- Left off at: "jobs stuck in cleaned" issue
+
+### 2026-08-28T09:00:00+05:30 — Antigravity (Gemini)
+- Worked on: P2 stuck-in-cleaned, single-step queue, 1080p SSH quality, Instagram scheduled publish, sheet early-write fix, queue stuck diagnosis
+- Changed files: `job_queue.py`, `upload_job.py`, `cleaning_job.py`, `watermark.py`, `instagram_job.py` (new), `sheets.py`, `routers/posts.py`, `routers/schedule.py`, `backend/main.py`, `Dashboard.jsx`, `ScheduleCalendar.jsx`, `background.js` (extension)
+- Verified how: 112 pytest passed, `npm run build` clean
+- Commits: `4942e89`, `c728c87`, `07581e6`, `40da950`
+
+### 2026-08-28T10:14:00+05:30 — Antigravity (Gemini) [skills run]
+- Worked on: FIX_PLAN.md created, Gemini model fixed, google-genai SDK, parallel fetch, stat label, extension content.js polling
+- Changed files: `config.py`, `gemini_service.py`, `requirements.txt`, `Dashboard.jsx`, `content.js`, `FIX_PLAN.md`
+- Verified how: 112 pytest passed, `npm run build` clean
+- Commits: `90a3d97`
+- Left off at: ALL items complete except Render disk persistence (blocked — needs user decision on S3 vs Render paid disk)
+
+### 2026-08-28T10:24:00+05:30 — Antigravity (Gemini)
+- Worked on: P4 extension content.js — new job-polling pattern, live progress bar, elapsed timer, fallback
+- Changed files: `chrome-extension/content.js`, `FIX_PLAN.md`
+- Verified how: code review, manual trace of `INGEST_VIDEO` → `GET_JOB_STATUS` flow
+- Left off at: ALL P1-P4 done. P5 disk persistence blocked — needs user decision.
+- Next step: user decide S3 vs Render persistent disk for video storage across restarts
+
 
 ## Status Legend
 - [ ] Not started
