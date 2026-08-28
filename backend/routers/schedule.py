@@ -16,7 +16,8 @@ from backend.config import settings
 from backend.database import get_db
 from backend.models import ChannelConfig, Post
 from backend.schemas import RescheduleRequest, ScheduleSlot, YouTubeScheduledPost
-from backend.services.youtube_auth import get_youtube_client
+from backend.services.youtube_auth import get_youtube_client, is_quota_error
+from backend.services.sheets import update_row_fields
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,92 @@ def _categorize_slot(dt: datetime) -> str:
         return "OFF_SLOT"
 
 
+def _fetch_youtube_channel_videos(yt, channel_key: str, extra_video_ids: list[str]) -> dict[str, dict]:
+    """
+    Query YouTube Data API for live video status (publishAt, privacyStatus, snippet).
+    Returns mapping of video_id -> info dict.
+    """
+    yt_info_by_vid: dict[str, dict] = {}
+    video_ids_to_query: set[str] = set(extra_video_ids)
+
+    try:
+        ch_resp = yt.channels().list(part="contentDetails,snippet", mine=True).execute()
+        ch_items = ch_resp.get("items", [])
+        if ch_items:
+            uploads_id = ch_items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
+            if uploads_id:
+                pl_resp = yt.playlistItems().list(
+                    part="snippet,contentDetails",
+                    playlistId=uploads_id,
+                    maxResults=50,
+                ).execute()
+                for item in pl_resp.get("items", []):
+                    vid = item.get("contentDetails", {}).get("videoId")
+                    if vid:
+                        video_ids_to_query.add(vid)
+    except Exception as exc:
+        logger.debug("Could not fetch channel uploads playlist for %s: %s", channel_key, exc)
+
+    if not video_ids_to_query:
+        return yt_info_by_vid
+
+    # Batch query in chunks of 50
+    vid_list = list(video_ids_to_query)
+    for i in range(0, len(vid_list), 50):
+        chunk = vid_list[i : i + 50]
+        try:
+            v_resp = yt.videos().list(part="snippet,status", id=",".join(chunk)).execute()
+            for v in v_resp.get("items", []):
+                vid = v.get("id")
+                status_obj = v.get("status", {})
+                snippet_obj = v.get("snippet", {})
+                pub_str = status_obj.get("publishAt")
+                privacy = status_obj.get("privacyStatus", "private")
+                published_str = snippet_obj.get("publishedAt")
+
+                dt = None
+                is_live_scheduled = False
+                is_live_published = False
+
+                if pub_str:
+                    try:
+                        dt = parse_dt(pub_str).astimezone(IST)
+                        is_live_scheduled = True
+                    except Exception:
+                        pass
+                elif privacy == "public" and published_str:
+                    try:
+                        dt = parse_dt(published_str).astimezone(IST)
+                        is_live_published = True
+                    except Exception:
+                        pass
+
+                thumbnails = snippet_obj.get("thumbnails", {})
+                thumb_url = (
+                    thumbnails.get("maxres", {}).get("url")
+                    or thumbnails.get("standard", {}).get("url")
+                    or thumbnails.get("high", {}).get("url")
+                    or thumbnails.get("medium", {}).get("url")
+                    or thumbnails.get("default", {}).get("url")
+                )
+
+                yt_info_by_vid[vid] = {
+                    "video_id": vid,
+                    "title": snippet_obj.get("title", ""),
+                    "description": snippet_obj.get("description", ""),
+                    "tags": snippet_obj.get("tags", []),
+                    "scheduled_at": dt,
+                    "is_live_scheduled": is_live_scheduled,
+                    "is_live_published": is_live_published,
+                    "privacy_status": privacy,
+                    "thumbnail_url": thumb_url,
+                }
+        except Exception as exc:
+            logger.warning("Error fetching YouTube video batch for %s: %s", channel_key, exc)
+
+    return yt_info_by_vid
+
+
 @router.get("", response_model=List[ScheduleSlot])
 def get_schedule_matrix(
     days: int = 7,
@@ -71,10 +158,11 @@ def get_schedule_matrix(
 ):
     """
     Generate schedule slot matrix for the next `days` (default 7) for all active channels.
+    Fetches real-time publishAt schedule times from YouTube Data API v3 and synchronizes with DB.
     Includes the 2 peak viral slots:
       - Slot A: 12:30 PM IST
       - Slot B: 06:30 PM IST
-    Also returns any off-slot or custom-time scheduled posts so no video is ever hidden.
+    Also returns off-slot or custom-time scheduled posts so no video is ever hidden.
     """
     days = max(1, min(days, 60))
     now_ist = datetime.now(IST)
@@ -102,38 +190,7 @@ def get_schedule_matrix(
     for channel_key, channel_name in active_channel_list:
         ig_enabled = ch_ig_map.get(channel_key, False)
 
-        # 1. Fetch live YouTube scheduled videos
-        yt_scheduled_list: list[dict] = []
-        try:
-            yt = get_youtube_client(channel_key)
-            ch_resp = yt.channels().list(part="contentDetails,snippet", mine=True).execute()
-            ch_items = ch_resp.get("items", [])
-            if ch_items:
-                uploads_id = ch_items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
-                if uploads_id:
-                    pl_resp = yt.playlistItems().list(part="snippet,contentDetails", playlistId=uploads_id, maxResults=50).execute()
-                    vid_ids = [item.get("contentDetails", {}).get("videoId") for item in pl_resp.get("items", []) if item.get("contentDetails", {}).get("videoId")]
-                    if vid_ids:
-                        v_resp = yt.videos().list(part="snippet,status", id=",".join(vid_ids[:50])).execute()
-                        for v in v_resp.get("items", []):
-                            status_obj = v.get("status", {})
-                            pub_str = status_obj.get("publishAt")
-                            if pub_str:
-                                try:
-                                    dt = parse_dt(pub_str).astimezone(IST)
-                                    yt_scheduled_list.append({
-                                        "title": v.get("snippet", {}).get("title"),
-                                        "video_id": v.get("id"),
-                                        "scheduled_at": dt,
-                                        "status": "scheduled",
-                                        "thumbnail_url": v.get("snippet", {}).get("thumbnails", {}).get("medium", {}).get("url"),
-                                    })
-                                except Exception:
-                                    pass
-        except Exception as exc:
-            logger.debug("Could not fetch live YouTube scheduled for %s: %s", channel_key, exc)
-
-        # 2. Fetch database posts for this channel with scheduled_at (excluding failed posts)
+        # 1. Fetch DB posts for this channel with scheduled_at (excluding failed posts)
         db_posts = (
             db.query(Post)
             .filter(
@@ -144,66 +201,103 @@ def get_schedule_matrix(
             .all()
         )
 
-        # Build day-indexed post lists
-        posts_by_date: dict[date, list[dict]] = {}
+        db_video_ids = [p.youtube_video_id for p in db_posts if p.youtube_video_id]
+
+        # 2. Fetch live YouTube videos for this channel
+        yt_info_by_vid: dict[str, dict] = {}
+        try:
+            yt = get_youtube_client(channel_key)
+            yt_info_by_vid = _fetch_youtube_channel_videos(yt, channel_key, db_video_ids)
+        except Exception as exc:
+            logger.debug("Could not connect to YouTube client for %s: %s", channel_key, exc)
+
+        # 3. Build unified deduplicated post list
+        unified_posts: list[dict] = []
+        processed_yt_vids: set[str] = set()
 
         for p in db_posts:
-            dt = _to_ist(p.scheduled_at)
-            d = dt.date()
-            if d not in posts_by_date:
-                posts_by_date[d] = []
-            posts_by_date[d].append({
-                "source": "db",
+            yt_info = yt_info_by_vid.get(p.youtube_video_id) if p.youtube_video_id else None
+
+            if yt_info and yt_info.get("is_live_scheduled") and yt_info.get("scheduled_at"):
+                # YouTube has an authoritative schedule time
+                yt_sched_dt = yt_info["scheduled_at"]
+                if p.scheduled_at != yt_sched_dt:
+                    try:
+                        p.scheduled_at = yt_sched_dt
+                        p.updated_at = datetime.now(timezone.utc)
+                        db.commit()
+                    except Exception:
+                        pass
+                final_dt = yt_sched_dt
+                final_status = "scheduled"
+                thumb_url = yt_info.get("thumbnail_url")
+                final_title = yt_info.get("title") or p.enriched_title or p.title or "Untitled"
+                processed_yt_vids.add(p.youtube_video_id)
+            elif yt_info and yt_info.get("is_live_published"):
+                final_dt = yt_info.get("scheduled_at") or _to_ist(p.scheduled_at)
+                final_status = "commented" if p.first_comment_posted else "uploaded"
+                thumb_url = yt_info.get("thumbnail_url")
+                final_title = yt_info.get("title") or p.enriched_title or p.title or "Untitled"
+                processed_yt_vids.add(p.youtube_video_id)
+            else:
+                final_dt = _to_ist(p.scheduled_at)
+                final_status = p.status
+                thumb_url = yt_info.get("thumbnail_url") if yt_info else None
+                final_title = p.enriched_title or p.title or "Untitled"
+
+            unified_posts.append({
                 "post_id": p.id,
-                "title": p.enriched_title or p.title or "Untitled",
-                "status": p.status,
-                "scheduled_at": dt,
                 "youtube_video_id": p.youtube_video_id,
-                "thumbnail_url": None,
+                "title": final_title,
+                "scheduled_at": final_dt,
+                "status": final_status,
+                "thumbnail_url": thumb_url,
                 "instagram_post_url": p.instagram_post_url,
                 "instagram_status": p.instagram_status,
+                "source": "pipeline",
             })
 
-        for yt_item in yt_scheduled_list:
-            dt = yt_item["scheduled_at"]
-            d = dt.date()
-            # Avoid duplicate if already matched by DB post youtube_video_id
-            if d in posts_by_date and any(x.get("youtube_video_id") == yt_item["video_id"] for x in posts_by_date[d]):
-                continue
+        # Include any external YouTube scheduled videos not present in local DB
+        for vid, yt_info in yt_info_by_vid.items():
+            if vid not in processed_yt_vids and yt_info.get("is_live_scheduled") and yt_info.get("scheduled_at"):
+                unified_posts.append({
+                    "post_id": None,
+                    "youtube_video_id": vid,
+                    "title": yt_info.get("title") or "YouTube Scheduled Video",
+                    "scheduled_at": yt_info["scheduled_at"],
+                    "status": "scheduled",
+                    "thumbnail_url": yt_info.get("thumbnail_url"),
+                    "instagram_post_url": None,
+                    "instagram_status": None,
+                    "source": "youtube",
+                })
+
+        # 4. Group unified posts by date
+        posts_by_date: dict[date, list[dict]] = {}
+        for item in unified_posts:
+            d = item["scheduled_at"].date()
             if d not in posts_by_date:
                 posts_by_date[d] = []
-            posts_by_date[d].append({
-                "source": "youtube",
-                "post_id": None,
-                "title": yt_item["title"],
-                "status": yt_item["status"],
-                "scheduled_at": dt,
-                "youtube_video_id": yt_item["video_id"],
-                "thumbnail_url": yt_item["thumbnail_url"],
-                "instagram_post_url": None,
-                "instagram_status": None,
-            })
+            posts_by_date[d].append(item)
 
-        # 3. Generate slots for each day
+        # 5. Generate timetable slots for each day
         for day_offset in range(days):
             d = today + timedelta(days=day_offset)
             day_posts = posts_by_date.get(d, [])
-
-            assigned_posts = set()
+            assigned_indices = set()
 
             # Process Slot A (12:30 PM) and Slot B (6:30 PM)
             for slot_label, hour, minute in VIRAL_SLOTS:
                 slot_dt = _slot_datetime(d, hour, minute)
-                is_in_future = (slot_dt > now_ist + timedelta(minutes=15))
+                is_in_future = (slot_dt > now_ist + timedelta(minutes=5))
 
-                # Find if any post falls in this slot category
                 matched_item = None
                 for idx, item in enumerate(day_posts):
-                    if idx in assigned_posts:
+                    if idx in assigned_indices:
                         continue
                     if _categorize_slot(item["scheduled_at"]) == slot_label:
                         matched_item = item
-                        assigned_posts.add(idx)
+                        assigned_indices.add(idx)
                         break
 
                 if matched_item:
@@ -243,9 +337,9 @@ def get_schedule_matrix(
                         )
                     )
 
-            # Any remaining posts on this date are OFF_SLOT / Custom-time posts
+            # Any remaining posts on this date go into OFF_SLOT
             for idx, item in enumerate(day_posts):
-                if idx not in assigned_posts:
+                if idx not in assigned_indices:
                     results.append(
                         ScheduleSlot(
                             channel=channel_key,
@@ -273,13 +367,14 @@ def get_schedule_matrix(
 def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
     """
     Drag-and-Drop / manual reschedule endpoint:
-    Updates scheduled_at in pipeline database and syncs new publishAt to YouTube API.
+    Updates scheduled_at in pipeline database, syncs new publishAt to YouTube API,
+    and updates Google Sheet row.
     """
     now_ist = datetime.now(IST)
     new_dt = _to_ist(req.new_scheduled_at)
 
-    if new_dt <= now_ist + timedelta(minutes=5):
-        raise HTTPException(status_code=400, detail="New scheduled time must be at least 5 minutes in the future.")
+    if new_dt <= now_ist + timedelta(minutes=2):
+        raise HTTPException(status_code=400, detail="New scheduled time must be at least 2 minutes in the future.")
 
     post = None
     if req.post_id:
@@ -288,7 +383,7 @@ def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
         post = db.query(Post).filter(Post.youtube_video_id == req.youtube_video_id).first()
 
     video_id_to_update = req.youtube_video_id or (post.youtube_video_id if post else None)
-    channel_key = req.channel or (post.channel if post else "the_indian_kitchen")
+    channel_key = req.channel or (post.channel if post else "channel_a")
 
     # 1. Update DB post if exists
     if post:
@@ -300,15 +395,25 @@ def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
         db.commit()
         logger.info("Rescheduled DB Post %s to %s", post.id, new_dt.isoformat())
 
+        # Update Google Sheet row if post is bound to a sheet row
+        if post.sheet_row_id:
+            try:
+                sheet_iso = new_dt.strftime("%Y-%m-%dT%H:%M:%S+05:30")
+                update_row_fields(channel_key, post.sheet_row_id, {"scheduled": sheet_iso})
+                logger.info("Updated Google Sheet row #%s scheduled time to %s", post.sheet_row_id, sheet_iso)
+            except Exception as exc:
+                logger.warning("Could not update Google Sheet row for rescheduled post %s: %s", post.id, exc)
+
     # 2. Update YouTube Video publishAt if video is on YouTube
     yt_updated = False
+    yt_error_msg = None
     if video_id_to_update:
         try:
             yt = get_youtube_client(channel_key)
             dt_utc = new_dt.astimezone(timezone.utc)
-            pub_iso = dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            pub_iso = dt_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-            # Fetch existing status & snippet
+            # Fetch existing snippet & status
             v_resp = yt.videos().list(part="snippet,status", id=video_id_to_update).execute()
             items = v_resp.get("items", [])
             if items:
@@ -316,29 +421,41 @@ def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
                 status_obj = v.get("status", {})
                 snippet_obj = v.get("snippet", {})
 
-                if status_obj.get("privacyStatus") != "public":
-                    status_obj["publishAt"] = pub_iso
-                    status_obj["privacyStatus"] = "private"
-
+                if status_obj.get("privacyStatus") == "public":
+                    logger.info("Video %s is already public on YouTube, cannot alter publishAt", video_id_to_update)
+                else:
                     update_body = {
                         "id": video_id_to_update,
                         "snippet": {
-                            "title": snippet_obj.get("title", ""),
-                            "description": snippet_obj.get("description", ""),
+                            "title": snippet_obj.get("title", post.enriched_title or post.title if post else "Shorts"),
+                            "description": snippet_obj.get("description", post.enriched_description or post.description if post else ""),
                             "tags": snippet_obj.get("tags", []),
-                            "categoryId": snippet_obj.get("categoryId", "22"),
+                            "categoryId": snippet_obj.get("categoryId") or "22",
                         },
-                        "status": status_obj,
+                        "status": {
+                            "privacyStatus": "private",
+                            "publishAt": pub_iso,
+                            "selfDeclaredMadeForKids": status_obj.get("selfDeclaredMadeForKids", False),
+                            "embeddable": status_obj.get("embeddable", True),
+                            "publicStatsViewable": status_obj.get("publicStatsViewable", True),
+                        },
                     }
                     yt.videos().update(part="snippet,status", body=update_body).execute()
                     yt_updated = True
-                    logger.info("Updated YouTube video %s publishAt to %s", video_id_to_update, pub_iso)
+                    logger.info("Successfully updated YouTube video %s publishAt to %s", video_id_to_update, pub_iso)
         except Exception as exc:
+            yt_error_msg = str(exc)
             logger.warning("Could not update YouTube publishAt for %s: %s", video_id_to_update, exc)
+
+    msg = f"Successfully rescheduled to {new_dt.strftime('%d %b %Y, %I:%M %p')} IST"
+    if video_id_to_update and yt_updated:
+        msg += " (synced to YouTube Studio)"
+    elif video_id_to_update and yt_error_msg:
+        msg += f" (Database updated, but YouTube update returned: {yt_error_msg[:60]})"
 
     return {
         "success": True,
-        "message": f"Successfully rescheduled to {new_dt.strftime('%d %b %Y, %I:%M %p')} IST",
+        "message": msg,
         "scheduled_at": new_dt.isoformat(),
         "youtube_updated": yt_updated,
     }

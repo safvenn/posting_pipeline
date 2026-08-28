@@ -101,13 +101,15 @@ export default function ScheduleCalendar() {
   function handleDragStart(e, item) {
     setDraggedItem(item)
     e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('application/json', JSON.stringify({
+    const payload = JSON.stringify({
       post_id: item.post_id,
       youtube_video_id: item.youtube_video_id,
       channel: item.channel,
       title: item.post_title,
       scheduled_at: item.scheduled_at,
-    }))
+    })
+    e.dataTransfer.setData('application/json', payload)
+    e.dataTransfer.setData('text/plain', payload)
   }
 
   function handleDragEnd() {
@@ -117,20 +119,35 @@ export default function ScheduleCalendar() {
 
   async function handleDrop(e, targetDateStr, targetSlotLabel, targetSlotTimeISO, channelKey) {
     e.preventDefault()
+    e.stopPropagation()
     setDragOverKey(null)
 
-    if (!draggedItem) return
-    if (!draggedItem.post_id && !draggedItem.youtube_video_id) {
+    let itemToReschedule = draggedItem
+    if (!itemToReschedule) {
+      try {
+        const raw = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('text/plain')
+        if (raw) itemToReschedule = JSON.parse(raw)
+      } catch (err) {}
+    }
+
+    if (!itemToReschedule) return
+    if (!itemToReschedule.post_id && !itemToReschedule.youtube_video_id) {
       showNotification('error', 'Cannot reschedule this item (missing identifier).')
+      return
+    }
+
+    const targetDate = new Date(targetSlotTimeISO)
+    if (targetDate <= new Date(Date.now() + 2 * 60 * 1000)) {
+      showNotification('error', 'Please pick a future time slot (at least 2 minutes ahead).')
       return
     }
 
     setRescheduling(true)
     try {
       const res = await rescheduleSlot({
-        post_id: draggedItem.post_id,
-        youtube_video_id: draggedItem.youtube_video_id,
-        channel: channelKey || draggedItem.channel,
+        post_id: itemToReschedule.post_id,
+        youtube_video_id: itemToReschedule.youtube_video_id,
+        channel: channelKey || itemToReschedule.channel,
         new_scheduled_at: targetSlotTimeISO,
       })
 
@@ -259,40 +276,18 @@ export default function ScheduleCalendar() {
               <span style={{ color: 'var(--text-muted)' }}>Available Viral Slot (Drop here)</span>
             </div>
             <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
-              <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--accent-border)', display: 'inline-block' }} />
-              <span style={{ color: 'var(--text-secondary)' }}>Scheduled Post (Draggable)</span>
+              <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--accent-border, #6366f144)', display: 'inline-block' }} />
+              <span style={{ color: 'var(--text-muted)' }}>Scheduled (Drag to change time)</span>
             </div>
             <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
-              <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: 'rgba(34, 197, 94, 0.2)', border: '1px solid rgba(34, 197, 94, 0.4)', display: 'inline-block' }} />
-              <span style={{ color: 'var(--success)' }}>✓ Posted (Fixed)</span>
-            </div>
-            <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
-              <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: '#78350f22', border: '1px solid #f59e0b', display: 'inline-block' }} />
-              <span style={{ color: '#f59e0b' }}>Off-Schedule Time</span>
+              <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: 'rgba(34, 197, 94, 0.12)', border: '1px solid rgba(34, 197, 94, 0.35)', display: 'inline-block' }} />
+              <span style={{ color: 'var(--text-muted)' }}>Posted / Live on YouTube</span>
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <div style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '4px 10px',
-              borderRadius: 6,
-              backgroundColor: 'rgba(225, 48, 108, 0.08)',
-              border: '1px solid rgba(225, 48, 108, 0.25)',
-              color: '#e1306c',
-              fontSize: 11.5,
-              fontWeight: 600,
-            }}>
-              <InstagramIcon size={13} color="#e1306c" />
-              <span>Instagram Reels Auto-Posting Active</span>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--accent-primary)', fontSize: 12, fontWeight: 500 }}>
-              <Sparkles size={14} />
-              <span>Viral Peaks: Slot A (12:30 PM) &amp; Slot B (6:30 PM IST)</span>
-            </div>
+          <div style={{ fontSize: 11.5, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Sparkles size={13} color="var(--accent-primary)" />
+            <span>Slots synced with live YouTube Studio data in real-time.</span>
           </div>
         </div>
       </div>
@@ -394,29 +389,36 @@ export default function ScheduleCalendar() {
                         const isAvail = s.is_available
                         const isOccupied = !isAvail && s.post_title
                         const isPosted = ['uploaded', 'commented'].includes(s.status) || (new Date(s.scheduled_at) < new Date() && Boolean(s.youtube_video_id))
+                        const canAcceptDrop = Boolean(draggedItem) && (!isPosted || isAvail)
 
                         return (
                           <td
                             key={slotKey}
                             onDragOver={e => {
-                              if (isAvail && draggedItem && !isPosted) {
+                              if (canAcceptDrop) {
                                 e.preventDefault()
-                                setDragOverKey(slotKey)
+                                e.dataTransfer.dropEffect = 'move'
+                                if (dragOverKey !== slotKey) setDragOverKey(slotKey)
                               }
                             }}
-                            onDragLeave={() => {
-                              if (dragOverKey === slotKey) setDragOverKey(null)
+                            onDragLeave={e => {
+                              if (e.currentTarget === e.target && dragOverKey === slotKey) {
+                                setDragOverKey(null)
+                              }
                             }}
                             onDrop={e => {
-                              if (isAvail && !isPosted) {
+                              if (canAcceptDrop) {
                                 handleDrop(e, d, label, s.scheduled_at, ch)
                               }
                             }}
                             style={{
                               padding: '10px 12px',
                               borderLeft: idx === 0 ? '1px solid var(--border-subtle)' : 'none',
-                              backgroundColor: isDragTarget ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
-                              transition: 'background-color 0.2s',
+                              backgroundColor: isDragTarget ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
+                              outline: isDragTarget ? '2px dashed var(--accent-primary, #6366f1)' : 'none',
+                              outlineOffset: -3,
+                              borderRadius: 8,
+                              transition: 'all 0.15s ease',
                             }}
                           >
                             {isOccupied ? (
@@ -436,6 +438,16 @@ export default function ScheduleCalendar() {
                                 }}
                                 className={isPosted ? '' : 'scheduled-card-hover'}
                               >
+                                {s.thumbnail_url && (
+                                  <div style={{ width: '100%', height: 68, borderRadius: 5, overflow: 'hidden', marginBottom: 8, backgroundColor: '#000' }}>
+                                    <img
+                                      src={s.thumbnail_url}
+                                      alt=""
+                                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                    />
+                                  </div>
+                                )}
+
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
                                   <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10.5, color: isPosted ? 'var(--success, #22c55e)' : 'var(--accent-primary)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
                                     <Clock size={11} />
@@ -600,18 +612,11 @@ export default function ScheduleCalendar() {
                               </div>
                             ) : isAvail ? (
                               <div
-                                onDragOver={e => {
-                                  if (draggedItem) {
-                                    e.preventDefault()
-                                    setDragOverKey(slotKey)
-                                  }
-                                }}
-                                onDrop={e => handleDrop(e, d, label, s.scheduled_at, ch)}
                                 style={{
                                   backgroundColor: isDragTarget ? 'rgba(99, 102, 241, 0.25)' : 'var(--bg-subtle)',
                                   border: `2px dashed ${isDragTarget ? 'var(--accent-primary, #6366f1)' : 'var(--border-subtle)'}`,
                                   borderRadius: 8,
-                                  padding: '12px 10px',
+                                  padding: '14px 10px',
                                   textAlign: 'center',
                                   fontSize: 11,
                                   color: isDragTarget ? 'var(--accent-primary)' : 'var(--text-muted)',

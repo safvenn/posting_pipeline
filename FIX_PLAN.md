@@ -66,12 +66,21 @@ Last updated: 2026-08-28T10:24:00+05:30 by Antigravity (Gemini)
 - Commits: `90a3d97`
 - Left off at: ALL items complete except Render disk persistence (blocked — needs user decision on S3 vs Render paid disk)
 
-### 2026-08-28T10:24:00+05:30 — Antigravity (Gemini)
-- Worked on: P4 extension content.js — new job-polling pattern, live progress bar, elapsed timer, fallback
-- Changed files: `chrome-extension/content.js`, `FIX_PLAN.md`
-- Verified how: code review, manual trace of `INGEST_VIDEO` → `GET_JOB_STATUS` flow
-- Left off at: ALL P1-P4 done. P5 disk persistence blocked — needs user decision.
-- Next step: user decide S3 vs Render persistent disk for video storage across restarts
+### 2026-08-28T10:55:00+05:30 — Antigravity (Gemini)
+- Worked on: Schedule live YouTube fetch + Drag & Drop reschedule logic
+- Fixed YouTube fetching:
+  - Fetches all uploads + DB video IDs via `videos().list(part="snippet,status")`
+  - Synchronizes DB `scheduled_at` with live YouTube `publishAt`
+  - Deduplicates posts so videos never show duplicate cards or wrong dates
+  - Displays video thumbnails directly on calendar cards
+- Fixed Drag & Drop Reschedule:
+  - Fixes YouTube `videos.update()` payload by stripping read-only fields (`uploadStatus`) and updating `privacyStatus='private'` + `publishAt`
+  - Synchronizes new scheduled time to Google Sheets if `sheet_row_id` is bound
+  - Fixes drag over & drop target collision, adds clear glowing drop indicator
+  - Enables smooth drag & drop to reschedule to any future viral slot
+- Changed files: `backend/routers/schedule.py`, `frontend/src/pages/ScheduleCalendar.jsx`, `FIX_PLAN.md`
+- Verified how: 112 pytest unit tests passed, frontend `npm run build` compiled cleanly (821ms)
+- Commits: to be pushed
 
 
 ## Status Legend
