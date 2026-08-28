@@ -416,7 +416,56 @@ def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
     # Always prioritize the post's actual channel to avoid 403 authorization mismatch
     channel_key = (post.channel if post and post.channel else req.channel) or "channel_a"
 
-    # 1. Update DB post if exists
+    # If video is already on YouTube, update YouTube Studio FIRST
+    yt_updated = False
+    if video_id_to_update:
+        try:
+            yt = get_youtube_client(channel_key)
+            dt_utc = new_dt.astimezone(timezone.utc)
+            pub_iso = dt_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+            # Fetch existing snippet & status
+            v_resp = yt.videos().list(part="snippet,status", id=video_id_to_update).execute()
+            items = v_resp.get("items", [])
+            if not items:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Video '{video_id_to_update}' not found on YouTube under channel '{channel_key}'. Schedule was NOT changed.",
+                )
+
+            v = items[0]
+            status_obj = v.get("status", {})
+
+            if status_obj.get("privacyStatus") == "public":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Video is already public on YouTube Studio (publishing time cannot be changed once public). Schedule was NOT changed.",
+                )
+
+            update_body = {
+                "id": video_id_to_update,
+                "status": {
+                    "privacyStatus": "private",
+                    "publishAt": pub_iso,
+                    "selfDeclaredMadeForKids": bool(status_obj.get("selfDeclaredMadeForKids", False)),
+                    "embeddable": bool(status_obj.get("embeddable", True)),
+                    "publicStatsViewable": bool(status_obj.get("publicStatsViewable", True)),
+                },
+            }
+            yt.videos().update(part="status", body=update_body).execute()
+            yt_updated = True
+            logger.info("Successfully updated YouTube video %s publishAt to %s on channel %s", video_id_to_update, pub_iso, channel_key)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            yt_err = _format_youtube_error(exc)
+            logger.warning("YouTube publishAt update failed for %s: %s", video_id_to_update, exc)
+            raise HTTPException(
+                status_code=400,
+                detail=f"YouTube update failed: {yt_err}. Schedule was NOT changed.",
+            )
+
+    # If YouTube update succeeded (or video not yet on YouTube), persist to DB & Google Sheet
     if post:
         post.scheduled_at = new_dt
         if post.status == "failed":
@@ -435,58 +484,15 @@ def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
             except Exception as exc:
                 logger.warning("Could not update Google Sheet row for rescheduled post %s: %s", post.id, exc)
 
-    # 2. Update YouTube Video publishAt if video is on YouTube
-    yt_updated = False
-    yt_error_msg = None
-    if video_id_to_update:
-        try:
-            yt = get_youtube_client(channel_key)
-            dt_utc = new_dt.astimezone(timezone.utc)
-            pub_iso = dt_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-            # Fetch existing snippet & status
-            v_resp = yt.videos().list(part="snippet,status", id=video_id_to_update).execute()
-            items = v_resp.get("items", [])
-            if items:
-                v = items[0]
-                status_obj = v.get("status", {})
-                snippet_obj = v.get("snippet", {})
-
-                if status_obj.get("privacyStatus") == "public":
-                    logger.info("Video %s is already public on YouTube, cannot alter publishAt", video_id_to_update)
-                    yt_error_msg = "Video is already public on YouTube (time is fixed)"
-                else:
-                    update_body = {
-                        "id": video_id_to_update,
-                        "status": {
-                            "privacyStatus": "private",
-                            "publishAt": pub_iso,
-                            "selfDeclaredMadeForKids": bool(status_obj.get("selfDeclaredMadeForKids", False)),
-                            "embeddable": bool(status_obj.get("embeddable", True)),
-                            "publicStatsViewable": bool(status_obj.get("publicStatsViewable", True)),
-                        },
-                    }
-                    yt.videos().update(part="status", body=update_body).execute()
-                    yt_updated = True
-                    logger.info("Successfully updated YouTube video %s publishAt to %s on channel %s", video_id_to_update, pub_iso, channel_key)
-            else:
-                yt_error_msg = f"Video not yet uploaded to YouTube — will upload automatically before scheduled time on channel '{channel_key}'"
-        except Exception as exc:
-            yt_error_msg = _format_youtube_error(exc)
-            logger.warning("Could not update YouTube publishAt for %s: %s", video_id_to_update, exc)
-
     msg = f"Rescheduled to {new_dt.strftime('%d %b, %I:%M %p')} IST"
-    if video_id_to_update and yt_updated:
+    if yt_updated:
         msg += " ✓ Synced with YouTube Studio"
-    elif video_id_to_update and yt_error_msg:
-        msg += f" (DB updated. {yt_error_msg})"
 
     return {
         "success": True,
         "message": msg,
         "scheduled_at": new_dt.isoformat(),
         "youtube_updated": yt_updated,
-        "youtube_note": yt_error_msg,
     }
 
 
