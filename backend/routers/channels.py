@@ -52,13 +52,20 @@ def get_channels(db: Session = Depends(get_db)):
 
 def _get_redirect_uri(request: Optional[Request] = None) -> str:
     """Dynamically determine OAuth callback URL based on deployment or incoming request."""
-    base = settings.backend_public_url.strip().rstrip("/") if settings.backend_public_url else ""
-    if not base and request:
+    raw_base = (settings.backend_public_url or "").strip()
+    if " " in raw_base:
+        raw_base = raw_base.split()[-1]
+
+    parsed = urllib.parse.urlparse(raw_base) if raw_base else None
+    if parsed and parsed.scheme and parsed.netloc:
+        base = f"{parsed.scheme}://{parsed.netloc}"
+    elif request:
         proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-        host = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost:8000"))
+        host = request.headers.get("x-forwarded-host", request.headers.get("host", "127.0.0.1:8000"))
         base = f"{proto}://{host}".rstrip("/")
-    if not base:
-        base = "http://localhost:8000"
+    else:
+        base = "http://127.0.0.1:8000"
+
     return f"{base}/api/channels/oauth/callback"
 
 
