@@ -370,6 +370,38 @@ def reset_stuck_posts(db: Session = Depends(get_db)):
     return {"message": f"Reset {count} stuck post(s) for reprocessing", "count": count}
 
 
+@router.post("/{post_id}/instagram-retry", status_code=200)
+def retry_instagram_publish(post_id: int, db: Session = Depends(get_db)):
+    """
+    Manually trigger Instagram Reel publishing for a specific post.
+    Resets instagram_status to 'none' so the scheduled job picks it up.
+    """
+    post = db.get(Post, post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    if not post.youtube_video_id:
+        raise HTTPException(status_code=400, detail="Post has not been uploaded to YouTube yet")
+
+    # Reset Instagram status so it gets picked up by the scheduler
+    post.instagram_status = "none"
+    post.instagram_error = None
+    post.instagram_media_id = None
+    post.instagram_post_url = None
+    db.commit()
+
+    # Trigger immediately in background
+    try:
+        from backend.jobs.instagram_job import publish_instagram_for_post
+        import threading
+        threading.Thread(target=publish_instagram_for_post, args=(post_id,), daemon=True).start()
+        logger.info("Triggered immediate Instagram retry for post %s", post_id)
+    except Exception as exc:
+        logger.warning("Could not trigger Instagram retry: %s", exc)
+
+    return {"message": f"Instagram retry triggered for post {post_id}", "post_id": post_id}
+
+
 @router.delete("/{post_id}", status_code=204)
 def delete_post(post_id: int, db: Session = Depends(get_db)):
     post = db.get(Post, post_id)

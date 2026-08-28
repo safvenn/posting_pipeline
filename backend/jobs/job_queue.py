@@ -11,6 +11,7 @@ Priority order when picking the next post to process:
   queued   → watermark removal (clean)
   cleaned  → Gemini enrichment + YouTube upload
   uploaded → first comment
+  uploaded → Instagram Reel publishing (at scheduled_at time)
 
 Runs every 30 seconds via APScheduler with max_instances=1.
 """
@@ -25,6 +26,10 @@ from backend.jobs.upload_job import (
     get_next_uploadable_post_id,
 )
 from backend.jobs.comment_job import comment_one_post, get_next_commentable_post_id
+from backend.jobs.instagram_job import (
+    publish_instagram_for_post,
+    get_next_instagram_publishable_post_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +49,8 @@ def run_serial_queue() -> None:
       1. cleaned → enrich & schedule (fast)
       2. scheduled (no youtube_video_id) → upload to YouTube
       3. uploaded/scheduled + youtube_video_id → first comment
-      4. queued → watermark removal on SSH worker (slow: 2-3 mins)
+      4. scheduled/commented (past publishAt+buffer) → Instagram Reel publishing
+      5. queued → watermark removal on SSH worker (slow: 2-3 mins)
     """
     acquired = _queue_lock.acquire(blocking=False)
     if not acquired:
@@ -66,7 +72,14 @@ def run_serial_queue() -> None:
             comment_one_post(post_id)
             return
 
-        # Priority 3: queued posts → cleaning (only when nothing else is pending)
+        # Priority 3: Instagram publishing (time-triggered, non-blocking)
+        post_id = get_next_instagram_publishable_post_id()
+        if post_id:
+            logger.info("[Queue] Processing post %s → Instagram Reel publish", post_id)
+            publish_instagram_for_post(post_id)
+            return
+
+        # Priority 4: queued posts → cleaning (only when nothing else is pending)
         post_id = get_next_cleanable_post_id()
         if post_id:
             logger.info("[Queue] Processing post %s → cleaning", post_id)

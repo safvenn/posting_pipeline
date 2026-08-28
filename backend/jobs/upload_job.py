@@ -205,16 +205,13 @@ def _upload_single_post(post: Post, db) -> bool:
         _set_status(db, post, "scheduled")
         _sheet_writeback(post.channel, post, video_id)
 
-        # Multi-platform: Trigger Instagram Reels publishing if enabled for this channel
-        try:
-            from backend.services.instagram import publish_reel_for_post
-            ig_res = publish_reel_for_post(post, db)
-            if ig_res.get("success"):
-                logger.info("Instagram Reel published for post %s: %s", post.id, ig_res.get("permalink"))
-            elif not ig_res.get("skipped"):
-                logger.warning("Instagram publishing status for post %s: %s", post.id, ig_res)
-        except Exception as ig_exc:
-            logger.warning("Instagram auto-publishing error for post %s: %s", post.id, ig_exc)
+        # Instagram Reels publishing is handled by instagram_job.py at scheduled_at time.
+        # This ensures the Reel goes live AFTER YouTube makes the video public.
+        logger.info(
+            "Post %s uploaded to YouTube (%s) — Instagram publishing will trigger at scheduled_at=%s",
+            post.id, video_id,
+            post.scheduled_at.strftime("%Y-%m-%d %H:%M UTC") if post.scheduled_at else "N/A",
+        )
 
         return True
     except Exception as exc:

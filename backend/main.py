@@ -20,6 +20,7 @@ from backend.routers.asmr import router as asmr_router, food_router as asmr_food
 from backend.routers.extension import router as extension_router
 from backend.jobs.job_queue import run_serial_queue
 from backend.jobs.asmr_workflow_job import run_asmr_workflow_job
+from backend.jobs.instagram_job import run_instagram_publish_job
 
 # --------------------------------------------------------------------------- #
 # Logging                                                                       #
@@ -41,8 +42,7 @@ _scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
 
 
 def _configure_scheduler() -> None:
-    # Serial pipeline queue — processes ONE post at a time
-    # Priority: queued → cleaned → uploaded (clean → enrich/upload → comment)
+    # Serial pipeline queue — processes ONE post at a time per tick
     _scheduler.add_job(
         run_serial_queue,
         trigger=IntervalTrigger(seconds=30),
@@ -52,7 +52,18 @@ def _configure_scheduler() -> None:
         replace_existing=True,
         misfire_grace_time=60,
     )
-    # ASMR Content Workflow — daily at 9 AM IST (separate workflow, not part of the queue)
+    # Instagram Scheduled Publishing — check every 60s for posts due for Instagram
+    # Runs independently so it never blocks the watermark/upload pipeline
+    _scheduler.add_job(
+        run_instagram_publish_job,
+        trigger=IntervalTrigger(seconds=60),
+        id="instagram_publish_job",
+        name="Instagram Scheduled Publisher",
+        max_instances=1,
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
+    # ASMR Content Workflow — daily at 9 AM IST
     _scheduler.add_job(
         run_asmr_workflow_job,
         trigger=CronTrigger(hour=9, minute=0, timezone="Asia/Kolkata"),
