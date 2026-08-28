@@ -337,6 +337,39 @@ def clear_failed_posts(db: Session = Depends(get_db)):
     return {"message": f"Cleared {count} failed posts", "count": count}
 
 
+@router.post("/reset-stuck", status_code=200)
+def reset_stuck_posts(db: Session = Depends(get_db)):
+    """
+    Re-queue any posts stuck in 'cleaning' or 'cleaned' status so the pipeline
+    picks them up again on the next scheduler tick.
+    """
+    stuck = db.query(Post).filter(Post.status.in_(["cleaning", "cleaned"])).all()
+    count = len(stuck)
+    for p in stuck:
+        old_status = p.status
+        # cleaned → scheduled (re-trigger enrich+upload without re-cleaning)
+        if p.status == "cleaned":
+            p.status = "cleaned"  # keep as cleaned so upload job picks it up
+            p.error_message = None
+        # cleaning → queued (re-trigger cleaning)
+        elif p.status == "cleaning":
+            p.status = "queued"
+            p.error_message = None
+        logger.info("Reset stuck post %s from %s for reprocessing", p.id, old_status)
+    if stuck:
+        db.commit()
+
+    # Immediately trigger the queue
+    try:
+        from backend.jobs.job_queue import run_serial_queue
+        import threading
+        threading.Thread(target=run_serial_queue, daemon=True).start()
+    except Exception as exc:
+        logger.warning("Could not trigger queue after reset: %s", exc)
+
+    return {"message": f"Reset {count} stuck post(s) for reprocessing", "count": count}
+
+
 @router.delete("/{post_id}", status_code=204)
 def delete_post(post_id: int, db: Session = Depends(get_db)):
     post = db.get(Post, post_id)

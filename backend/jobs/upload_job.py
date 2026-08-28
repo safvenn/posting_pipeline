@@ -84,8 +84,7 @@ def _gemini_enrich_and_schedule(channel: str, post: Post, db) -> Optional[dict]:
             target_post=post,
         )
     except Exception as exc:
-        logger.error("Gemini enrichment failed for channel %s: %s", channel, exc)
-        _set_status(db, post, "failed", f"Gemini enrichment error: {exc}")
+        logger.warning("Gemini enrichment failed for channel %s (falling back to rule-based): %s", channel, exc)
         return None
 
 
@@ -197,18 +196,8 @@ def _upload_single_post(post: Post, db) -> bool:
         return False
     video_path = str(video_p)
 
-    # Enforce 1080p Full HD master quality before uploading to YouTube
-    try:
-        from backend.services.video_quality import enhance_to_1080p_hd
-        enhanced_path = enhance_to_1080p_hd(video_path)
-        if enhanced_path and os.path.exists(enhanced_path):
-            video_path = enhanced_path
-            if enhanced_path != str(video_p):
-                post.clean_video_path = enhanced_path
-                db.commit()
-                logger.info("Post %s: using 1080p Full HD video for upload: %s", post.id, enhanced_path)
-    except Exception as eq_exc:
-        logger.warning("Post %s: 1080p enhancement check error (using original): %s", post.id, eq_exc)
+    # Note: 1080p Full HD remastering is already applied on the SSH worker (watermark.py Step 2.5).
+    # No local FFmpeg re-encoding needed — avoids blocking Render's queue for 10+ minutes.
 
     try:
         video_id = _do_upload(yt, post, video_path)

@@ -34,12 +34,17 @@ _queue_lock = threading.Lock()
 
 def run_serial_queue() -> None:
     """
-    Single APScheduler entry point — picks the highest-priority actionable
-    post and runs exactly one pipeline step for it.
+    Single APScheduler entry point — processes exactly ONE step per scheduler tick.
 
-    Because APScheduler is configured with max_instances=1 and we also hold
-    _queue_lock, at most one invocation runs at a time even if a step takes
-    longer than the 30-second interval.
+    Each call handles the highest-priority pending post in one step, then returns.
+    The 30-second scheduler interval chains steps naturally, preventing memory buildup
+    and stuck jobs from blocking the queue forever.
+
+    Priority order per tick:
+      1. cleaned → enrich & schedule (fast)
+      2. scheduled (no youtube_video_id) → upload to YouTube
+      3. uploaded/scheduled + youtube_video_id → first comment
+      4. queued → watermark removal on SSH worker (slow: 2-3 mins)
     """
     acquired = _queue_lock.acquire(blocking=False)
     if not acquired:
@@ -47,28 +52,27 @@ def run_serial_queue() -> None:
         return
 
     try:
-        # Priority 1: queued posts → cleaning
-        post_id = get_next_cleanable_post_id()
-        if post_id:
-            logger.info("[Queue] Processing post %s → cleaning", post_id)
-            clean_one_post(post_id)
-            return
-
-        # Priority 2: cleaned / due-scheduled posts → enrich + upload
+        # Priority 1: cleaned posts → enrich + schedule
         post_id = get_next_uploadable_post_id()
         if post_id:
             logger.info("[Queue] Processing post %s → enrich/upload", post_id)
             enrich_and_upload_one_post(post_id)
             return
 
-        # Priority 3: uploaded posts → first comment
+        # Priority 2: commentable posts → first comment
         post_id = get_next_commentable_post_id()
         if post_id:
             logger.info("[Queue] Processing post %s → comment", post_id)
             comment_one_post(post_id)
             return
 
-        # Nothing to do
+        # Priority 3: queued posts → cleaning (only when nothing else is pending)
+        post_id = get_next_cleanable_post_id()
+        if post_id:
+            logger.info("[Queue] Processing post %s → cleaning", post_id)
+            clean_one_post(post_id)
+            return
+
         logger.debug("[Queue] No actionable posts found")
 
     except Exception:

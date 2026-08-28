@@ -83,13 +83,14 @@ async def lifespan(app: FastAPI):
         from backend.database import SessionLocal
         from backend.models import Post
         with SessionLocal() as db:
-            orphans = db.query(Post).filter(Post.status == "cleaning").all()
-            for p in orphans:
-                logger.warning("Startup recovery: resetting stuck post %s from cleaning -> queued", p.id)
+            stuck = db.query(Post).filter(Post.status.in_(["cleaning"])).all()
+            for p in stuck:
+                logger.warning("Startup recovery: resetting stuck post %s from %s -> queued", p.id, p.status)
                 p.status = "queued"
                 p.error_message = None
-            if orphans:
+            if stuck:
                 db.commit()
+                logger.info("Startup recovery: reset %d stuck post(s) to queued", len(stuck))
     except Exception as exc:
         logger.warning("Startup post recovery error: %s", exc)
 

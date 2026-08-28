@@ -13,6 +13,7 @@ import {
   ExternalLink,
   ChevronRight,
   Sparkles,
+  RotateCcw,
 } from 'lucide-react'
 import StatusBadge from '../components/StatusBadge'
 import RunningJobBanner from '../components/RunningJobBanner'
@@ -20,6 +21,7 @@ import LiveStopwatch from '../components/LiveStopwatch'
 import { getPosts } from '../api/posts'
 import { getChannels } from '../api/channels'
 import { parseUTCDate } from '../utils/timeFormat'
+import client from '../api/client'
 
 const STATUSES = [
   { id: 'all', label: 'All Statuses' },
@@ -115,6 +117,7 @@ export default function Dashboard() {
   const [channel, setChannel] = useState('all')
   const [status, setStatus] = useState('all')
   const [loading, setLoading] = useState(true)
+  const [resetMsg, setResetMsg] = useState('')
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -147,8 +150,21 @@ export default function Dashboard() {
     return () => clearInterval(id)
   }, [load])
 
+  async function handleResetStuck() {
+    try {
+      const res = await client.post('/posts/reset-stuck')
+      setResetMsg(res.data.message || 'Reset complete')
+      setTimeout(() => setResetMsg(''), 5000)
+      load()
+    } catch (err) {
+      setResetMsg('Reset failed: ' + (err?.response?.data?.detail || err.message))
+      setTimeout(() => setResetMsg(''), 5000)
+    }
+  }
+
   const runningPost = posts.find(p => p.status === 'cleaning')
   const queuedCount = posts.filter(p => p.status === 'queued').length
+  const stuckCount = posts.filter(p => ['cleaning', 'cleaned'].includes(p.status)).length
 
   return (
     <div>
@@ -164,7 +180,19 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {stuckCount > 0 && (
+            <button
+              className="btn btn-secondary"
+              onClick={handleResetStuck}
+              title={`${stuckCount} job(s) stuck in cleaned/cleaning — click to re-queue`}
+              style={{ color: 'var(--warning, #f59e0b)', borderColor: 'var(--warning, #f59e0b)' }}
+            >
+              <RotateCcw size={14} />
+              <span>Reset Stuck ({stuckCount})</span>
+            </button>
+          )}
+
           <button
             className="btn btn-secondary"
             onClick={load}
@@ -184,6 +212,12 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {resetMsg && (
+        <div style={{ margin: '0 0 12px', padding: '10px 16px', backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 8, fontSize: 13, color: 'var(--accent-primary)' }}>
+          ✓ {resetMsg}
+        </div>
+      )}
 
       {/* Active Running Job Banner with live stopwatch */}
       <RunningJobBanner runningPost={runningPost} queuedCount={queuedCount} />
