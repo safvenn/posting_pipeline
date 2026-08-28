@@ -23,13 +23,17 @@ router = APIRouter(prefix="/api/extension", tags=["extension"])
 
 
 def _verify_extension_auth(
+    authorization: Optional[str] = Header(None),
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     api_key: Optional[str] = Query(None),
 ) -> None:
-    """If API_KEY is set in environment, require matching key from header or query param."""
+    """If API_KEY is set in environment, accept matching key from Bearer token, header, or query param."""
     if not settings.api_key or not settings.api_key.strip():
         return
-    provided = x_api_key or api_key
+    bearer = ""
+    if authorization and authorization.startswith("Bearer "):
+        bearer = authorization[7:].strip()
+    provided = x_api_key or api_key or bearer
     if not provided or provided.strip() != settings.api_key.strip():
         raise HTTPException(
             status_code=401,
