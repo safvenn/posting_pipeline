@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
+import threading
 from typing import Optional
 
 from googleapiclient.http import MediaFileUpload
@@ -165,7 +166,8 @@ def _schedule_single_post(post: Post, db) -> bool:
     # This prevents orphan rows in the Sheet when upload fails after scheduling.
 
     # Cache Gemini result for sheet write-back after upload
-    _gemini_result_cache[post.id] = result
+    with _gemini_cache_lock:
+        _gemini_result_cache[post.id] = result
     return True
 
 
@@ -231,6 +233,7 @@ def _upload_single_post(post: Post, db) -> bool:
 
 # In-memory cache: post_id -> Gemini result dict (for sheet write-back after upload)
 _gemini_result_cache: dict[int, dict] = {}
+_gemini_cache_lock = threading.Lock()
 
 
 def enrich_one_post(post_id: int) -> None:
@@ -393,7 +396,8 @@ def _sheet_writeback(channel: str, post: Post, video_id: str) -> None:
         return
 
     # Prioritize post.sheet_row_id directly from the database record
-    gemini_result = _gemini_result_cache.get(post.id)
+    with _gemini_cache_lock:
+        gemini_result = _gemini_result_cache.get(post.id)
     sheet_row_id = post.sheet_row_id or (gemini_result.get("id") if gemini_result else None)
 
     if not sheet_row_id:
@@ -425,7 +429,8 @@ def _sheet_writeback(channel: str, post: Post, video_id: str) -> None:
             post.id, sheet_row_id, video_id, scheduled_str,
         )
         # Clean cache entry
-        _gemini_result_cache.pop(post.id, None)
+        with _gemini_cache_lock:
+            _gemini_result_cache.pop(post.id, None)
     except Exception as exc:
         logger.error("Sheet write-back failed for post %s on row %s: %s", post.id, sheet_row_id, exc)
         # Non-fatal — video is uploaded, sheet sync can be retried manually

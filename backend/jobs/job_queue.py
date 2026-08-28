@@ -81,11 +81,13 @@ def run_serial_queue() -> None:
         # Priority 3: scheduled (no video_id) → YouTube upload (background thread)
         post_id = get_next_uploadable_post_id()
         if post_id:
+            spawned = False
             with _uploading_lock:
                 if post_id in _uploading:
-                    logger.debug("[Queue] Post %s already uploading, skip", post_id)
+                    logger.debug("[Queue] Post %s already uploading, skip to next priority", post_id)
                 else:
                     _uploading.add(post_id)
+                    spawned = True
                     logger.info("[Queue] Post %s → YouTube upload (background)", post_id)
 
                     def _run_upload(pid=post_id):
@@ -96,7 +98,8 @@ def run_serial_queue() -> None:
                                 _uploading.discard(pid)
 
                     threading.Thread(target=_run_upload, name=f"upload-{post_id}", daemon=True).start()
-            return
+            if spawned:
+                return
 
         # Priority 4: comment
         post_id = get_next_commentable_post_id()

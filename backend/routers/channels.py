@@ -9,7 +9,6 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
-import uuid
 
 from backend.database import get_db
 from backend.models import ChannelConfig

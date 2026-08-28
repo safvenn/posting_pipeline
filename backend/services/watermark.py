@@ -20,6 +20,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import paramiko
 
@@ -69,8 +70,8 @@ def _ssh_client() -> paramiko.SSHClient:
         if os.path.exists(key_path):
             connect_kwargs["key_filename"] = key_path
 
-    # 3. Password fallback
-    if settings.worker_ssh_password:
+    # 3. Password fallback (only if key auth not configured)
+    elif settings.worker_ssh_password:
         connect_kwargs["password"] = settings.worker_ssh_password
 
     client.connect(**connect_kwargs)

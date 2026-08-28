@@ -51,9 +51,12 @@ class Base(DeclarativeBase):
 
 
 def get_db():
-    """FastAPI dependency: yields a DB session, always closes on exit."""
+    """FastAPI dependency: yields a DB session, rolls back on exception, always closes on exit."""
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

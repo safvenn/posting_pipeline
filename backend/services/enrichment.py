@@ -21,11 +21,12 @@ import json
 import logging
 import re
 from datetime import datetime
+from typing import Optional
 
-import google.generativeai as genai
 import pytz
 
 from backend.config import settings
+from backend.services.gemini_service import GeminiService
 from backend.services.sheets import get_first_unscheduled_row, get_all_rows
 from backend.services.youtube_auth import get_youtube_client
 
@@ -191,19 +192,8 @@ def _fetch_channel_data(channel: str) -> tuple[dict, list]:
 
 
 def _call_gemini(prompt: str) -> str:
-    """Call Gemini Flash Lite, return raw text response."""
-    if not settings.gemini_api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY not configured. Set it in .env to use AI enrichment."
-        )
-
-    genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel(
-        model_name=settings.gemini_model,
-        system_instruction=_SYSTEM_MESSAGE,
-    )
-    response = model.generate_content(prompt)
-    return response.text
+    """Call Gemini Flash Lite via unified GeminiService, return raw text response."""
+    return GeminiService().generate_text(prompt, system_instruction=_SYSTEM_MESSAGE)
 
 
 def _parse_gemini_json(raw: str) -> dict:
@@ -211,12 +201,7 @@ def _parse_gemini_json(raw: str) -> dict:
     Parse Gemini JSON output — strips markdown fences if model adds them despite instructions.
     Raises ValueError on invalid JSON.
     """
-    text = raw.strip()
-    # Strip ```json ... ``` or ``` ... ``` fences
-    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE)
-    text = text.strip()
-    return json.loads(text)
+    return GeminiService.parse_json_response(raw)
 
 
 def enrich_post_gemini(
@@ -303,12 +288,11 @@ def enrich_post_gemini(
         target_row=target_row,
     )
 
-    # Step 5: Call Gemini
+    # Step 5: Call Gemini via centralized service with retries
     logger.info("Calling Gemini (%s) for channel %s enrichment", settings.gemini_model, channel)
     try:
-        raw = _call_gemini(prompt)
-        logger.debug("Gemini raw output: %.500s", raw)
-        result = _parse_gemini_json(raw)
+        service = GeminiService()
+        result = service.generate_json(prompt, system_instruction=_SYSTEM_MESSAGE)
     except Exception as exc:
         logger.error(
             "Gemini enrichment failed for channel %s with model %s: %s",
@@ -323,16 +307,6 @@ def enrich_post_gemini(
 
     if result.get("id") is None and target_post:
         result["id"] = getattr(target_post, "sheet_row_id", None)
-
-    # Validate and enforce authoritative future slot time
-    from backend.services.scheduler_logic import pick_next_slot
-    from backend.database import SessionLocal
-    with SessionLocal() as db_session:
-        try:
-            slot = pick_next_slot(channel, db_session)
-            result["date"] = slot.strftime("%Y-%m-%dT%H:%M:%S+05:30")
-        except Exception as exc:
-            logger.warning("Could not pick next slot during Gemini enrichment: %s", exc)
 
     logger.info(
         "Channel %s: Gemini enriched id=%s at %s",

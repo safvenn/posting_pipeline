@@ -8,17 +8,33 @@ from pathlib import Path
 from typing import List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database import SessionLocal, get_db
 from backend.models import ChannelConfig, Post
+from backend.routers.posts import _validate_video_file, _VIDEO_MAGIC, _MAGIC_READ_BYTES
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/extension", tags=["extension"])
+
+
+def _verify_extension_auth(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(None),
+) -> None:
+    """If API_KEY is set in environment, require matching key from header or query param."""
+    if not settings.api_key or not settings.api_key.strip():
+        return
+    provided = x_api_key or api_key
+    if not provided or provided.strip() != settings.api_key.strip():
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key for extension ingest.",
+        )
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -129,10 +145,11 @@ async def upload_from_extension(
     tags: Optional[str] = Form(""),
     sheet_row_id: Optional[str] = Form(None),
     video: UploadFile = File(...),
+    _auth: None = Depends(_verify_extension_auth),
 ):
     """
     Accepts video file directly from the extension as multipart/form-data.
-    Queues immediately with NO schedule constraints.
+    Queues immediately with NO schedule constraints after validating real video content.
     """
     title = (title or "").strip()
     if not title:
@@ -140,6 +157,9 @@ async def upload_from_extension(
     channel = (channel or "").strip().lower()
     if not channel:
         raise HTTPException(status_code=422, detail="channel is required")
+
+    # Validate video format and magic bytes
+    await _validate_video_file(video)
 
     upload_dir = settings.upload_path()
     filename = f"flow_{uuid.uuid4().hex}.mp4"
@@ -175,7 +195,10 @@ async def upload_from_extension(
 
 
 @router.post("/ingest", response_model=ExtensionIngestResponse)
-async def ingest_from_extension(body: ExtensionIngestRequest):
+async def ingest_from_extension(
+    body: ExtensionIngestRequest,
+    _auth: None = Depends(_verify_extension_auth),
+):
     """Fallback URL-based ingest."""
     title = (body.title or "").strip()
     if not title:
@@ -195,6 +218,26 @@ async def ingest_from_extension(body: ExtensionIngestRequest):
             with open(dest, "wb") as f:
                 async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
                     f.write(chunk)
+
+    # Validate downloaded file magic bytes
+    try:
+        with open(dest, "rb") as f:
+            header = f.read(_MAGIC_READ_BYTES)
+        matched = any(
+            header[offset: offset + len(sig)] == sig
+            for offset, sig in _VIDEO_MAGIC
+        )
+        if not matched:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=400,
+                detail="Downloaded URL content does not match a valid video format signature.",
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Failed to inspect downloaded video: {exc}")
 
     with SessionLocal() as db:
         post = Post(
