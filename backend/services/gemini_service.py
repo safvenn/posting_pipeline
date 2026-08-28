@@ -17,7 +17,14 @@ import re
 import time
 from typing import Any
 
-import google.generativeai as genai
+# Prefer new google-genai SDK; fall back to legacy google-generativeai if not installed
+try:
+    import google.genai as genai
+    import google.genai.types as genai_types
+    _USING_NEW_SDK = True
+except ImportError:
+    import google.generativeai as genai  # type: ignore[no-redef]
+    _USING_NEW_SDK = False
 from google.api_core import exceptions as google_exceptions
 
 from backend.config import settings
@@ -52,23 +59,39 @@ class GeminiService:
         """
         Call Gemini and return raw text response.
         Retries on transient failures with exponential backoff.
+        Uses new google-genai SDK if available, falls back to legacy SDK.
         """
-        model = genai.GenerativeModel(
-            model_name=self._model_name,
-            system_instruction=system_instruction,
-        )
-
         last_error: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 2):  # 1-indexed, MAX_RETRIES + 1 total attempts
+        for attempt in range(1, MAX_RETRIES + 2):
             try:
                 start = time.monotonic()
-                response = model.generate_content(prompt)
+
+                if _USING_NEW_SDK:
+                    # New SDK: google.genai.Client
+                    client = genai.Client(api_key=self._api_key)
+                    config = {"system_instruction": system_instruction} if system_instruction else {}
+                    response = client.models.generate_content(
+                        model=self._model_name,
+                        contents=prompt,
+                        config=config or None,
+                    )
+                    text = response.text
+                else:
+                    # Legacy SDK: google.generativeai
+                    genai.configure(api_key=self._api_key)
+                    model = genai.GenerativeModel(
+                        model_name=self._model_name,
+                        system_instruction=system_instruction,
+                    )
+                    response = model.generate_content(prompt)
+                    text = response.text
+
                 elapsed = time.monotonic() - start
                 logger.info(
-                    "Gemini call: model=%s attempt=%d elapsed=%.2fs",
-                    self._model_name, attempt, elapsed,
+                    "Gemini call: model=%s sdk=%s attempt=%d elapsed=%.2fs",
+                    self._model_name, "new" if _USING_NEW_SDK else "legacy", attempt, elapsed,
                 )
-                return response.text
+                return text
 
             except google_exceptions.ResourceExhausted as exc:
                 last_error = exc

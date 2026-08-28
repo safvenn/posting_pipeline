@@ -57,7 +57,12 @@ class Settings(BaseSettings):
 
     # Gemini API (Google AI Studio)
     gemini_api_key: str = ""
-    gemini_model: str = "models/gemini-3.5-flash-lite"
+    # Valid public API model names (override via GEMINI_MODEL env var on Render):
+    #   gemini-2.0-flash        — fastest, cheapest (default)
+    #   gemini-1.5-flash        — good balance
+    #   gemini-1.5-pro          — highest quality, slower
+    # INVALID (does not exist): models/gemini-3.5-flash-lite
+    gemini_model: str = "gemini-2.0-flash"
 
     # Google Sheets (service account JSON)
     google_sheets_service_account_json: str = "./service_account.json"

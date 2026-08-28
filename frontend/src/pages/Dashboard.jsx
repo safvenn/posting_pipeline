@@ -91,7 +91,7 @@ function StatOverview({ posts }) {
         </div>
         <div>
           <div className="stat-value">{completed}</div>
-          <div className="stat-label">Completed</div>
+          <div className="stat-label" title="Posts that have completed the full pipeline: cleaned → uploaded → commented">Done (Commented)</div>
         </div>
       </div>
 
@@ -121,11 +121,16 @@ export default function Dashboard() {
   const navigate = useNavigate()
 
   useEffect(() => {
-    getChannels()
-      .then(data => {
-        if (Array.isArray(data)) setChannels(data)
-      })
-      .catch(() => {})
+    // async-parallel: fetch channels and initial posts concurrently, not serially
+    Promise.all([
+      getChannels().catch(() => []),
+      getPosts({}).catch(() => ({ items: [], total: 0 })),
+    ]).then(([chData, postData]) => {
+      if (Array.isArray(chData)) setChannels(chData)
+      setPosts(postData.items || [])
+      setTotal(postData.total || 0)
+      setLoading(false)
+    })
   }, [])
 
   const load = useCallback(() => {
