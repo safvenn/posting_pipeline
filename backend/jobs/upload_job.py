@@ -137,14 +137,14 @@ def _schedule_single_post(post: Post, db) -> bool:
             _set_status(db, post, "failed", f"Scheduling error: {exc}")
             return False
 
-    # Ensure result date reflects the exact scheduled slot for sheet writeback
+    # Ensure result date reflects the exact scheduled slot
     result["date"] = scheduled_at.strftime("%Y-%m-%dT%H:%M:%S+05:30")
 
     # If Gemini resolved a sheet row id and post didn't have one, persist it
     if result.get("id") and not post.sheet_row_id:
         post.sheet_row_id = str(result["id"])
 
-    # Save enriched content to Post
+    # Save enriched content to Post DB row
     post.enriched_title = result.get("title") or post.title
     post.enriched_description = result.get("description") or post.description
     tags_list = result.get("tags", [])
@@ -154,23 +154,15 @@ def _schedule_single_post(post: Post, db) -> bool:
 
     post.error_message = None
     _set_status(db, post, "scheduled")
-    logger.info("Post %s scheduled at %s (sheet_row_id=%s)", post.id, result["date"], post.sheet_row_id)
+    logger.info(
+        "Post %s scheduled at %s (sheet_row_id=%s) — Sheet will be updated only after YouTube upload succeeds",
+        post.id, result["date"], post.sheet_row_id,
+    )
 
-    # Immediately write scheduled time to Google Sheet row
-    if post.sheet_row_id and result.get("date"):
-        try:
-            from backend.services.sheets import update_row_fields
-            update_row_fields(
-                channel=post.channel,
-                row_id=post.sheet_row_id,
-                fields={
-                    "scheduled": result["date"],
-                    "title": post.enriched_title or post.title,
-                },
-            )
-            logger.info("Updated Google Sheet row #%s with scheduled=%s for post %s", post.sheet_row_id, result["date"], post.id)
-        except Exception as sheet_err:
-            logger.warning("Could not update schedule time on sheet row %s: %s", post.sheet_row_id, sheet_err)
+    # NOTE: Google Sheet is NOT written here.
+    # Sheet writeback (scheduled + upload_id + title) happens in _sheet_writeback
+    # ONLY after the YouTube upload confirms a valid video_id.
+    # This prevents orphan rows in the Sheet when upload fails after scheduling.
 
     # Cache Gemini result for sheet write-back after upload
     _gemini_result_cache[post.id] = result
@@ -201,8 +193,19 @@ def _upload_single_post(post: Post, db) -> bool:
 
     try:
         video_id = _do_upload(yt, post, video_path)
+
+        # Guard: only proceed if YouTube returned a real video ID
+        if not video_id or not video_id.strip():
+            err = "YouTube upload returned empty video_id — upload may have failed silently"
+            logger.error("Post %s: %s", post.id, err)
+            _set_status(db, post, "failed", err)
+            return False
+
         post.youtube_video_id = video_id
         _set_status(db, post, "scheduled")
+
+        # Sheet is written ONLY here — with upload_id confirmed.
+        # scheduled_at + upload_id + enriched_title all written in one atomic call.
         _sheet_writeback(post.channel, post, video_id)
 
         # Instagram Reels publishing is handled by instagram_job.py at scheduled_at time.
@@ -223,6 +226,7 @@ def _upload_single_post(post: Post, db) -> bool:
             logger.exception("Upload failed for post %s", post.id)
             _set_status(db, post, "failed", f"upload error: {exc}")
         return False
+
 
 
 # In-memory cache: post_id -> Gemini result dict (for sheet write-back after upload)

@@ -254,16 +254,31 @@ def update_row_after_upload(
 ) -> None:
     """
     Write scheduled date, YouTube upload ID, and enriched title back to the Google Sheet.
+
+    IMPORTANT: This function is intentionally blocked if upload_id is empty.
+    Sheet must only be updated once the YouTube video ID is confirmed.
     """
+    if not upload_id or not str(upload_id).strip():
+        logger.error(
+            "update_row_after_upload called with empty upload_id for row %s channel %s — "
+            "sheet will NOT be updated to prevent orphan rows",
+            row_id, channel,
+        )
+        return
+
     fields = {}
     if scheduled_at:
         fields["scheduled"] = scheduled_at
-    if upload_id:
-        fields["upload id"] = upload_id
+    fields["upload id"] = upload_id.strip()   # always write — this is the trigger field
     if enriched_title:
         fields["title"] = enriched_title
 
+    logger.info(
+        "Writing to Google Sheet: channel=%s row=%s upload_id=%s scheduled=%s",
+        channel, row_id, upload_id, scheduled_at,
+    )
     update_row_fields(channel, row_id, fields)
+
 
 
 def is_row_scheduled(channel: str, row_id: int | str) -> bool:
