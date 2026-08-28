@@ -368,7 +368,7 @@ def _fetch_channel_stats(channel: str, default_name: str = "", is_custom: bool =
     try:
         yt = get_youtube_client(channel)
 
-        ch_resp = yt.channels().list(part="snippet,statistics", mine=True).execute()
+        ch_resp = yt.channels().list(part="snippet,statistics,contentDetails", mine=True).execute()
         items = ch_resp.get("items", [])
         if not items:
             raise ValueError("No channel found for authenticated user")

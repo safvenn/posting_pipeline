@@ -363,6 +363,36 @@ def get_schedule_matrix(
     return results
 
 
+def _format_youtube_error(exc: Exception) -> str:
+    """Format YouTube HttpError into a clear human-readable message."""
+    err_str = str(exc)
+    if is_quota_error(exc):
+        return "YouTube API daily quota limit reached (10,000 units/day)."
+
+    # Try to parse JSON error message from HttpError
+    if hasattr(exc, "content"):
+        try:
+            import json
+            data = json.loads(exc.content.decode("utf-8") if isinstance(exc.content, bytes) else str(exc.content))
+            err_obj = data.get("error", {})
+            msg = err_obj.get("message")
+            errors = err_obj.get("errors", [])
+            reason = errors[0].get("reason") if errors else None
+
+            if reason in ("quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded"):
+                return "YouTube API daily quota limit reached."
+            if reason in ("forbidden", "accessNotConfigured") or "permission" in str(msg).lower():
+                return f"YouTube permission error: {msg or 'Channel account does not own this video'}"
+            if msg:
+                return f"YouTube: {msg}"
+        except Exception:
+            pass
+
+    if "403" in err_str:
+        return "YouTube 403 Forbidden (Check channel authorization or quota limit)"
+    return f"YouTube: {err_str[:70]}"
+
+
 @router.post("/reschedule")
 def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
     """
@@ -383,7 +413,8 @@ def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
         post = db.query(Post).filter(Post.youtube_video_id == req.youtube_video_id).first()
 
     video_id_to_update = req.youtube_video_id or (post.youtube_video_id if post else None)
-    channel_key = req.channel or (post.channel if post else "channel_a")
+    # Always prioritize the post's actual channel to avoid 403 authorization mismatch
+    channel_key = (post.channel if post and post.channel else req.channel) or "channel_a"
 
     # 1. Update DB post if exists
     if post:
@@ -393,7 +424,7 @@ def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
             post.error_message = None
         post.updated_at = datetime.now(timezone.utc)
         db.commit()
-        logger.info("Rescheduled DB Post %s to %s", post.id, new_dt.isoformat())
+        logger.info("Rescheduled DB Post %s to %s (channel=%s)", post.id, new_dt.isoformat(), channel_key)
 
         # Update Google Sheet row if post is bound to a sheet row
         if post.sheet_row_id:
@@ -423,6 +454,7 @@ def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
 
                 if status_obj.get("privacyStatus") == "public":
                     logger.info("Video %s is already public on YouTube, cannot alter publishAt", video_id_to_update)
+                    yt_error_msg = "Video is already public on YouTube (time is fixed)"
                 else:
                     update_body = {
                         "id": video_id_to_update,
@@ -442,22 +474,25 @@ def reschedule_post(req: RescheduleRequest, db: Session = Depends(get_db)):
                     }
                     yt.videos().update(part="snippet,status", body=update_body).execute()
                     yt_updated = True
-                    logger.info("Successfully updated YouTube video %s publishAt to %s", video_id_to_update, pub_iso)
+                    logger.info("Successfully updated YouTube video %s publishAt to %s on channel %s", video_id_to_update, pub_iso, channel_key)
+            else:
+                yt_error_msg = f"Video not found on YouTube under channel '{channel_key}'"
         except Exception as exc:
-            yt_error_msg = str(exc)
+            yt_error_msg = _format_youtube_error(exc)
             logger.warning("Could not update YouTube publishAt for %s: %s", video_id_to_update, exc)
 
-    msg = f"Successfully rescheduled to {new_dt.strftime('%d %b %Y, %I:%M %p')} IST"
+    msg = f"Rescheduled to {new_dt.strftime('%d %b, %I:%M %p')} IST"
     if video_id_to_update and yt_updated:
-        msg += " (synced to YouTube Studio)"
+        msg += " ✓ Synced with YouTube Studio"
     elif video_id_to_update and yt_error_msg:
-        msg += f" (Database updated, but YouTube update returned: {yt_error_msg[:60]})"
+        msg += f" (DB updated. {yt_error_msg})"
 
     return {
         "success": True,
         "message": msg,
         "scheduled_at": new_dt.isoformat(),
         "youtube_updated": yt_updated,
+        "youtube_note": yt_error_msg,
     }
 
 
