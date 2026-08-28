@@ -233,52 +233,88 @@ def _upload_single_post(post: Post, db) -> bool:
 _gemini_result_cache: dict[int, dict] = {}
 
 
-def enrich_and_upload_one_post(post_id: int) -> None:
+def enrich_one_post(post_id: int) -> None:
     """
-    Process a single post: enrich → schedule → upload to YouTube with publishAt → writeback.
-    Called by the serial job queue runner.
+    Step A (fast, runs IN the queue tick):
+    Gemini enrichment + schedule slot assignment only.
+    Transitions post: cleaned → scheduled.
+    YouTube upload happens in the NEXT step (upload_one_post) in a background thread.
     """
     db = SessionLocal()
     try:
         post = db.get(Post, post_id)
         if not post:
-            logger.warning("Post %s not found for upload", post_id)
+            logger.warning("Post %s not found for enrichment", post_id)
             return
-
-        if post.status == "cleaned":
-            # Step 1: Enrich + schedule
-            success = _schedule_single_post(post, db)
-            if not success:
-                return
-            # Refresh post after schedule
-            db.refresh(post)
-
-        if post.status == "scheduled":
-            # Step 2: Upload to YouTube immediately with publishAt
-            _upload_single_post(post, db)
-
+        if post.status != "cleaned":
+            logger.warning("Post %s is %s not cleaned, skipping enrich", post_id, post.status)
+            return
+        _schedule_single_post(post, db)
     except Exception:
-        logger.exception("Error processing post %s in upload pipeline", post_id)
+        logger.exception("Error enriching post %s", post_id)
     finally:
         db.close()
 
 
-def get_next_uploadable_post_id() -> int | None:
-    """Return the ID of the oldest cleaned or scheduled post needing YouTube upload, or None."""
+def upload_one_post(post_id: int) -> None:
+    """
+    Step B (slow, runs in background thread spawned by queue):
+    YouTube API upload only. Post must already be in 'scheduled' status with enriched data.
+    Transitions post: scheduled → uploaded (status set by _upload_single_post).
+    """
     db = SessionLocal()
     try:
-        # Priority 1: cleaned posts needing enrichment + scheduling
-        cleaned = (
+        post = db.get(Post, post_id)
+        if not post:
+            logger.warning("Post %s not found for YouTube upload", post_id)
+            return
+        if post.status != "scheduled":
+            logger.warning("Post %s is %s not scheduled, skipping upload", post_id, post.status)
+            return
+        if post.youtube_video_id:
+            logger.info("Post %s already has video_id %s, skipping upload", post_id, post.youtube_video_id)
+            return
+        _upload_single_post(post, db)
+    except Exception:
+        logger.exception("Error uploading post %s to YouTube", post_id)
+    finally:
+        db.close()
+
+
+# Keep for backwards compatibility (called by some tests)
+def enrich_and_upload_one_post(post_id: int) -> None:
+    """Deprecated: use enrich_one_post + upload_one_post separately."""
+    enrich_one_post(post_id)
+    # Re-fetch to get updated status before upload
+    db = SessionLocal()
+    try:
+        post = db.get(Post, post_id)
+        if post and post.status == "scheduled" and not post.youtube_video_id:
+            upload_one_post(post_id)
+    finally:
+        db.close()
+
+
+def get_next_enrichable_post_id() -> int | None:
+    """Return oldest `cleaned` post needing Gemini enrichment, or None."""
+    db = SessionLocal()
+    try:
+        row = (
             db.query(Post.id)
             .filter(Post.status == "cleaned")
             .order_by(Post.created_at.asc())
             .first()
         )
-        if cleaned:
-            return cleaned.id
+        return row.id if row else None
+    finally:
+        db.close()
 
-        # Priority 2: scheduled posts needing upload to YouTube
-        scheduled = (
+
+def get_next_uploadable_post_id() -> int | None:
+    """Return oldest `scheduled` post needing YouTube upload (no video_id yet), or None."""
+    db = SessionLocal()
+    try:
+        row = (
             db.query(Post.id)
             .filter(
                 Post.status == "scheduled",
@@ -287,9 +323,10 @@ def get_next_uploadable_post_id() -> int | None:
             .order_by(Post.created_at.asc())
             .first()
         )
-        return scheduled.id if scheduled else None
+        return row.id if row else None
     finally:
         db.close()
+
 
 
 # --------------------------------------------------------------------------- #
