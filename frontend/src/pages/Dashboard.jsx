@@ -195,7 +195,7 @@ export default function Dashboard() {
   const isInitialLoad = !postData && postsFetching
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-surface-base">
+    <div className="dashboard-root flex-1 flex flex-col min-w-0 bg-surface-base">
       {/* ===================================================================== */}
       {/* TOP NAVIGATION BAR (Persistent Header)                                 */}
       {/* ===================================================================== */}
@@ -212,12 +212,12 @@ export default function Dashboard() {
         </div>
 
         {/* Right Controls */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
           {/* Search bar with Cmd+K */}
-          <div className="relative hidden md:block w-64">
+          <div className="relative hidden md:block w-72">
             <Search
-              size={15}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-outline"
+              size={14}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-outline pointer-events-none"
             />
             <input
               ref={searchInputRef}
@@ -225,9 +225,9 @@ export default function Dashboard() {
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               placeholder="Filter jobs, tags, ID..."
-              className="w-full pl-8 pr-12 py-1.5 bg-surface-1 border border-border-subtle rounded-lg text-xs text-on-surface placeholder-outline focus:outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] transition-all"
+              className="h-8 w-full pl-9 pr-12 bg-surface-1 border border-border-subtle rounded-lg text-xs text-on-surface placeholder-outline focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all"
             />
-            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono text-outline bg-surface-2 px-1.5 py-0.5 rounded border border-border-subtle">
+            <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-mono text-outline bg-surface-2 px-1.5 py-0.5 rounded border border-border-subtle pointer-events-none">
               ⌘K
             </span>
           </div>
@@ -236,7 +236,7 @@ export default function Dashboard() {
           {stuckCount > 0 && (
             <button
               onClick={handleResetStuck}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-status-warning/10 border border-status-warning/30 text-status-warning hover:bg-status-warning/20 rounded-lg text-xs font-medium transition-all active:scale-95"
+              className="h-8 flex items-center gap-1.5 px-3 bg-status-warning/10 border border-status-warning/30 text-status-warning hover:bg-status-warning/20 rounded-lg text-xs font-medium transition-all active:scale-95"
               title={`${stuckCount} stuck job(s) in cleaned/cleaning — click to re-queue`}
             >
               <RotateCcw size={13} />
@@ -248,11 +248,11 @@ export default function Dashboard() {
           <button
             onClick={handleRefresh}
             disabled={postsFetching}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-2 border border-border-strong text-on-surface hover:bg-surface-3 rounded-lg text-xs font-medium transition-all active:scale-95"
+            className="h-8 flex items-center gap-1.5 px-3 bg-surface-2 border border-border-strong text-on-surface hover:bg-surface-3 rounded-lg text-xs font-medium transition-all active:scale-95"
             title="Refresh Dashboard Feed"
           >
             <RefreshCw
-              size={14}
+              size={13}
               className={`text-primary ${isRefreshing || postsFetching ? 'animate-spin' : ''}`}
             />
             <span>Refresh</span>
@@ -261,14 +261,14 @@ export default function Dashboard() {
           {/* Upload Video Primary CTA */}
           <button
             onClick={() => navigate('/upload')}
-            className="flex items-center gap-2 px-3.5 py-1.5 bg-[#3B82F6] hover:bg-[#2563EB] text-white font-semibold text-xs rounded-lg shadow-sm active:scale-95 transition-all"
+            className="h-8 flex items-center gap-2 px-3.5 bg-primary hover:bg-primary-hover text-white font-semibold text-xs rounded-lg shadow-sm active:scale-95 transition-all"
           >
             <Upload size={14} />
             <span>Upload Video</span>
           </button>
 
           {/* Vertical Divider */}
-          <div className="h-5 w-px bg-border-subtle" />
+          <div className="h-4 w-px bg-border-subtle mx-0.5" />
 
           {/* System Actions */}
           <div className="flex items-center gap-1">
@@ -313,72 +313,80 @@ export default function Dashboard() {
         {/* =================================================================== */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           {/* Metric 1: TOTAL POSTS */}
-          <div className="bg-surface-1 border border-border-subtle p-4 rounded-xl relative overflow-hidden group hover:border-border-strong transition-all">
-            <div className="flex items-center justify-between">
-              <span className="text-label-caps text-outline uppercase tracking-wider text-[11px]">Total Posts</span>
-              <Layers size={18} className="text-outline group-hover:text-primary transition-colors" />
+          <div className="bg-surface-1 border border-border-subtle p-4 rounded-xl relative overflow-hidden group hover:border-border-strong transition-all flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between h-5">
+                <span className="text-label-caps text-outline uppercase tracking-wider text-[11px]">Total Posts</span>
+                <Layers size={16} className="text-outline group-hover:text-primary transition-colors" />
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-display-lg text-on-surface">{totalCount}</span>
+                <span className="text-mono-data-sm text-status-success text-xs flex items-center">
+                  ↑ active
+                </span>
+              </div>
             </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-display-lg text-on-surface">{totalCount}</span>
-              <span className="text-mono-data-sm text-status-success text-xs flex items-center">
-                ↑ active
-              </span>
+            <div className="mt-2 h-6 flex items-center text-mono-data-sm text-outline text-[11px]">
+              Across {channels.length || 3} active channels
             </div>
-            <div className="mt-2 text-mono-data-sm text-outline text-[11px]">
-              Across {channels.length || 3} active channel outputs
-            </div>
-            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#3B82F6] to-transparent opacity-50" />
+            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-primary to-transparent opacity-50" />
           </div>
 
           {/* Metric 2: IN PIPELINE */}
-          <div className="bg-surface-1 border border-border-subtle p-4 rounded-xl relative overflow-hidden group hover:border-border-strong transition-all">
-            <div className="flex items-center justify-between">
-              <span className="text-label-caps text-outline uppercase tracking-wider text-[11px]">In Pipeline</span>
-              <Hourglass size={18} className="text-outline group-hover:text-status-info transition-colors" />
+          <div className="bg-surface-1 border border-border-subtle p-4 rounded-xl relative overflow-hidden group hover:border-border-strong transition-all flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between h-5">
+                <span className="text-label-caps text-outline uppercase tracking-wider text-[11px]">In Pipeline</span>
+                <Hourglass size={16} className="text-outline group-hover:text-status-info transition-colors" />
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-display-lg text-on-surface">{inPipelineCount}</span>
+                <span className="text-mono-data-sm text-outline text-xs">
+                  {inPipelineCount > 0 ? 'Processing' : 'Idle'}
+                </span>
+              </div>
             </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-display-lg text-on-surface">{inPipelineCount}</span>
-              <span className="text-mono-data-sm text-outline text-xs">
-                {inPipelineCount > 0 ? 'Processing' : 'Idle'}
-              </span>
-            </div>
-            <div className="mt-2 text-mono-data-sm text-outline text-[11px]">
-              {inPipelineCount > 0 ? `${queuedCount} queued in queue` : 'Transcoder queue clear'}
+            <div className="mt-2 h-6 flex items-center text-mono-data-sm text-outline text-[11px]">
+              {inPipelineCount > 0 ? `${queuedCount} queued in transcoder` : 'Transcoder queue clear'}
             </div>
             <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-outline to-transparent opacity-20" />
           </div>
 
           {/* Metric 3: SCHEDULED */}
-          <div className="bg-surface-1 border border-border-subtle p-4 rounded-xl relative overflow-hidden group hover:border-border-strong transition-all">
-            <div className="flex items-center justify-between">
-              <span className="text-label-caps text-outline uppercase tracking-wider text-[11px]">Scheduled</span>
-              <Calendar size={18} className="text-status-warning" />
+          <div className="bg-surface-1 border border-border-subtle p-4 rounded-xl relative overflow-hidden group hover:border-border-strong transition-all flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between h-5">
+                <span className="text-label-caps text-outline uppercase tracking-wider text-[11px]">Scheduled</span>
+                <Calendar size={16} className="text-status-warning" />
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-display-lg text-on-surface">{scheduledCount}</span>
+                <span className="text-mono-data-sm text-status-warning bg-status-warning/10 px-1.5 py-0.5 rounded border border-status-warning/20 text-[10px]">
+                  Ready to Publish
+                </span>
+              </div>
             </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-display-lg text-on-surface">{scheduledCount}</span>
-              <span className="text-mono-data-sm text-status-warning bg-status-warning/10 px-1.5 py-0.5 rounded border border-status-warning/20 text-[10px]">
-                Ready to Publish
-              </span>
-            </div>
-            <div className="mt-2 text-mono-data-sm text-outline text-[11px]">
+            <div className="mt-2 h-6 flex items-center text-mono-data-sm text-outline text-[11px]">
               Automated stagger release
             </div>
             <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#F59E0B] to-transparent opacity-40" />
           </div>
 
           {/* Metric 4: DONE (COMMENTED) */}
-          <div className="bg-surface-1 border border-border-subtle p-4 rounded-xl relative overflow-hidden group hover:border-border-strong transition-all">
-            <div className="flex items-center justify-between">
-              <span className="text-label-caps text-outline uppercase tracking-wider text-[11px]">Done (Commented)</span>
-              <CheckCircle2 size={18} className="text-status-success" />
+          <div className="bg-surface-1 border border-border-subtle p-4 rounded-xl relative overflow-hidden group hover:border-border-strong transition-all flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between h-5">
+                <span className="text-label-caps text-outline uppercase tracking-wider text-[11px]">Done (Commented)</span>
+                <CheckCircle2 size={16} className="text-status-success" />
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-display-lg text-on-surface">{completedCount}</span>
+                <span className="text-mono-data-sm text-status-success bg-status-success/10 px-1.5 py-0.5 rounded border border-status-success/20 text-[10px]">
+                  100% verified
+                </span>
+              </div>
             </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-display-lg text-on-surface">{completedCount}</span>
-              <span className="text-mono-data-sm text-status-success bg-status-success/10 px-1.5 py-0.5 rounded border border-status-success/20 text-[10px]">
-                100% verified
-              </span>
-            </div>
-            <div className="mt-2 text-mono-data-sm text-outline text-[11px]">
+            <div className="mt-2 h-6 flex items-center text-mono-data-sm text-outline text-[11px]">
               First-comment pinned
             </div>
             <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#10B981] to-transparent opacity-40" />
@@ -386,37 +394,39 @@ export default function Dashboard() {
 
           {/* Metric 5: ACTION REQUIRED / FAILED */}
           <div
-            className={`p-4 rounded-xl relative overflow-hidden group transition-all ${
+            className={`p-4 rounded-xl relative overflow-hidden group transition-all flex flex-col justify-between ${
               failedCount > 0
                 ? 'bg-status-danger/5 border border-status-danger/30 hover:border-status-danger/60'
                 : 'bg-surface-1 border border-border-subtle hover:border-border-strong'
             }`}
           >
-            <div className="flex items-center justify-between">
-              <span className={`text-label-caps uppercase tracking-wider text-[11px] font-bold ${failedCount > 0 ? 'text-status-danger' : 'text-outline'}`}>
-                {failedCount > 0 ? 'Action Required' : 'Failed Jobs'}
-              </span>
-              <AlertTriangle
-                size={18}
-                className={failedCount > 0 ? 'text-status-danger animate-pulse' : 'text-outline'}
-              />
+            <div>
+              <div className="flex items-center justify-between h-5">
+                <span className={`text-label-caps uppercase tracking-wider text-[11px] font-bold ${failedCount > 0 ? 'text-status-danger' : 'text-outline'}`}>
+                  {failedCount > 0 ? 'Action Required' : 'Failed Jobs'}
+                </span>
+                <AlertTriangle
+                  size={16}
+                  className={failedCount > 0 ? 'text-status-danger animate-pulse' : 'text-outline'}
+                />
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className={`text-display-lg font-bold ${failedCount > 0 ? 'text-status-danger' : 'text-on-surface'}`}>
+                  {failedCount}
+                </span>
+                <span className={`text-mono-data-sm text-xs ${failedCount > 0 ? 'text-status-danger' : 'text-outline'}`}>
+                  FAILED
+                </span>
+              </div>
             </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className={`text-display-lg font-bold ${failedCount > 0 ? 'text-status-danger' : 'text-on-surface'}`}>
-                {failedCount}
-              </span>
-              <span className={`text-mono-data-sm text-xs ${failedCount > 0 ? 'text-status-danger' : 'text-outline'}`}>
-                FAILED
-              </span>
-            </div>
-            <div className="mt-2 flex items-center justify-between">
-              <span className="text-mono-data-sm text-outline text-[11px]">
-                Watermark / API limits
+            <div className="mt-2 h-6 flex items-center justify-between text-mono-data-sm text-[11px]">
+              <span className="text-outline truncate">
+                {failedCount > 0 ? 'Watermark / limits' : 'All pipelines clean'}
               </span>
               {failedCount > 0 && (
                 <button
                   onClick={() => setStatus('failed')}
-                  className="text-mono-data-sm text-white bg-status-danger/20 hover:bg-status-danger/40 border border-status-danger/40 px-2 py-0.5 rounded text-[11px] transition-all"
+                  className="shrink-0 text-mono-data-sm text-white bg-status-danger/20 hover:bg-status-danger/40 border border-status-danger/40 px-2 py-0.5 rounded text-[10px] transition-all ml-1.5"
                 >
                   Inspect →
                 </button>
@@ -433,9 +443,9 @@ export default function Dashboard() {
         {/* =================================================================== */}
         <section className="bg-surface-1 border border-border-subtle rounded-xl p-3.5 space-y-3">
           {/* Channel Segment Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 border-b border-border-subtle">
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-border-subtle">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-label-caps text-outline uppercase tracking-wider text-[11px] pl-1">
+              <span className="w-16 shrink-0 text-label-caps text-outline uppercase tracking-wider text-[11px] pl-1">
                 Channel:
               </span>
               <div className="flex flex-wrap items-center gap-1.5">
@@ -471,7 +481,7 @@ export default function Dashboard() {
             </div>
 
             {/* Quick Bulk Actions */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 ml-auto">
               <button
                 onClick={exportCSV}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-mono-data-sm text-xs bg-surface-2 border border-border-subtle text-on-surface-variant hover:text-on-surface hover:border-border-strong rounded-lg transition-all"
@@ -497,7 +507,7 @@ export default function Dashboard() {
           {/* Status Filter Chips Bar */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-label-caps text-outline uppercase tracking-wider text-[11px] pl-1">
+              <span className="w-16 shrink-0 text-label-caps text-outline uppercase tracking-wider text-[11px] pl-1">
                 Status:
               </span>
               <div className="flex flex-wrap items-center gap-1.5">
@@ -512,7 +522,7 @@ export default function Dashboard() {
                     <button
                       key={s.id}
                       onClick={() => setStatus(s.id)}
-                      className={`px-3 py-1.5 text-mono-data-sm text-xs rounded-lg transition-all ${
+                      className={`px-3 py-1 text-mono-data-sm text-xs rounded-lg transition-all flex items-center gap-1.5 ${
                         isSelected
                           ? 'bg-surface-3 text-on-surface border border-primary font-semibold ring-1 ring-primary/40 shadow-sm'
                           : s.id === 'failed' && failedCount > 0
@@ -520,7 +530,8 @@ export default function Dashboard() {
                           : 'bg-surface-2 border border-border-subtle text-outline hover:text-on-surface hover:bg-surface-3 hover:border-border-strong'
                       }`}
                     >
-                      {s.label}{extraBadge}
+                      <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
+                      <span>{s.label}{extraBadge}</span>
                     </button>
                   )
                 })}
@@ -528,7 +539,7 @@ export default function Dashboard() {
             </div>
 
             {/* Telemetry Date Pill */}
-            <div className="flex items-center gap-1.5 text-mono-data-sm text-outline text-xs">
+            <div className="flex items-center gap-1.5 text-mono-data-sm text-outline text-xs ml-auto">
               <Calendar size={13} />
               <span>Production Pipeline Sync</span>
             </div>
@@ -540,16 +551,16 @@ export default function Dashboard() {
         {/* =================================================================== */}
         <section className="bg-surface-1 border border-border-subtle rounded-xl overflow-hidden shadow-2xl">
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse min-w-[760px]">
+            <table className="w-full text-left border-collapse min-w-[900px]">
               <thead>
                 <tr className="border-b border-border-subtle bg-surface-base/60 text-label-caps text-outline uppercase tracking-wider text-[11px]">
-                  <th className="py-3 px-4 w-14 text-center">ID</th>
-                  <th className="py-3 px-4 min-w-[320px]">Post Title &amp; Pipeline Metadata</th>
-                  <th className="py-3 px-4 min-w-[170px]">Channel</th>
-                  <th className="py-3 px-4 min-w-[160px]">Status &amp; Timing</th>
-                  <th className="py-3 px-4 min-w-[150px]">Scheduled Time</th>
-                  <th className="py-3 px-4 min-w-[140px]">YouTube Link</th>
-                  <th className="py-3 px-4 w-24 text-right">Actions</th>
+                  <th className="py-3 px-4 w-16 text-left">ID</th>
+                  <th className="py-3 px-4">Post Title &amp; Pipeline Metadata</th>
+                  <th className="py-3 px-4 w-44 text-left">Channel</th>
+                  <th className="py-3 px-4 w-48 text-left">Status &amp; Timing</th>
+                  <th className="py-3 px-4 w-40 text-left">Scheduled Time</th>
+                  <th className="py-3 px-4 w-36 text-left">YouTube Link</th>
+                  <th className="py-3 px-4 w-20 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-subtle/60 text-xs">
@@ -607,12 +618,12 @@ export default function Dashboard() {
                       } ${isCommented ? 'bg-status-success/[0.02]' : ''}`}
                     >
                       {/* ID */}
-                      <td className="py-3 px-4 text-center font-mono text-outline group-hover:text-primary">
+                      <td className="py-3 px-4 w-16 text-left font-mono text-outline group-hover:text-primary align-middle">
                         #{p.id}
                       </td>
 
                       {/* Title & Metadata */}
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 align-middle">
                         <div className="font-semibold text-on-surface group-hover:text-primary transition-colors line-clamp-1">
                           {p.enriched_title || p.title}
                         </div>
@@ -630,7 +641,7 @@ export default function Dashboard() {
                       </td>
 
                       {/* Channel */}
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 w-44 align-middle">
                         <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-surface-2 border border-border-strong text-mono-data-sm text-on-surface text-[11px]">
                           <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                           {channelLabel}
@@ -638,17 +649,17 @@ export default function Dashboard() {
                       </td>
 
                       {/* Status & Timing */}
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 w-48 align-middle">
                         <StatusBadge status={p.status} post={p} showTiming />
                       </td>
 
                       {/* Scheduled Time */}
-                      <td className="py-3 px-4 font-mono text-on-surface-variant text-[11px]">
+                      <td className="py-3 px-4 w-40 font-mono text-on-surface-variant text-[11px] align-middle">
                         {fmtTime(p.scheduled_at)}
                       </td>
 
                       {/* YouTube Link */}
-                      <td className="py-3 px-4" onClick={e => e.stopPropagation()}>
+                      <td className="py-3 px-4 w-36 align-middle" onClick={e => e.stopPropagation()}>
                         {p.youtube_video_id ? (
                           <a
                             href={`https://youtu.be/${p.youtube_video_id}`}
@@ -665,7 +676,7 @@ export default function Dashboard() {
                       </td>
 
                       {/* Actions */}
-                      <td className="py-3 px-4 text-right" onClick={e => e.stopPropagation()}>
+                      <td className="py-3 px-4 w-20 text-right align-middle" onClick={e => e.stopPropagation()}>
                         {isFailed ? (
                           <button
                             onClick={() => navigate(`/post/${p.id}`)}
@@ -680,7 +691,7 @@ export default function Dashboard() {
                             className="p-1 hover:bg-surface-3 rounded text-outline hover:text-on-surface transition-colors"
                             title="View post details"
                           >
-                            <MoreVertical size={16} />
+                            <ChevronRight size={15} />
                           </button>
                         )}
                       </td>
