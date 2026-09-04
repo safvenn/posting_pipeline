@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   RefreshCw,
@@ -12,7 +12,7 @@ import {
   CheckCircle2,
 } from 'lucide-react'
 import StatusBadge from '../components/StatusBadge'
-import { getPosts, retryPost, clearFailedPosts } from '../api/posts'
+import { usePostsQuery, useRetryPost, useClearFailedPosts } from '../hooks/usePosts'
 import { parseUTCDate } from '../utils/timeFormat'
 
 function fmtTime(isoStr) {
@@ -33,26 +33,25 @@ function isQuotaError(msg) {
 }
 
 export default function FailedJobs() {
-  const [posts, setPosts] = useState([])
-  const [loading, setLoading] = useState(false)
   const [retrying, setRetrying] = useState({})
   const navigate = useNavigate()
 
-  function load() {
-    setLoading(true)
-    getPosts({ status: 'failed' })
-      .then(d => setPosts(d.items || []))
-      .catch(console.error)
-      .finally(() => setLoading(false))
-  }
+  const FAILED_PARAMS = { status: 'failed' }
+  const {
+    data: postData,
+    isFetching: loading,
+    refetch,
+  } = usePostsQuery(FAILED_PARAMS)
 
-  useEffect(() => { load() }, [])
+  const retryMutation = useRetryPost()
+  const clearMutation = useClearFailedPosts()
+
+  const posts = postData?.items || []
 
   async function handleRetry(id) {
     setRetrying(r => ({ ...r, [id]: true }))
     try {
-      await retryPost(id)
-      setPosts(ps => ps.filter(p => p.id !== id))
+      await retryMutation.mutateAsync(id)
     } catch (err) {
       alert(`Retry failed: ${err.response?.data?.detail || err}`)
     } finally {
@@ -62,14 +61,10 @@ export default function FailedJobs() {
 
   async function handleClearAll() {
     if (!confirm('Are you sure you want to delete all failed jobs?')) return
-    setLoading(true)
     try {
-      await clearFailedPosts()
-      setPosts([])
+      await clearMutation.mutateAsync()
     } catch (err) {
       alert(`Clear failed: ${err.response?.data?.detail || err}`)
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -94,21 +89,21 @@ export default function FailedJobs() {
               <span>Clear All Failed</span>
             </button>
           )}
-          <button className="btn btn-secondary" onClick={load} disabled={loading} id="failed-refresh">
+          <button className="btn btn-secondary" onClick={() => refetch()} disabled={loading} id="failed-refresh">
             <RefreshCw size={14} className={loading ? 'spinner' : ''} />
             <span>Refresh</span>
           </button>
         </div>
       </div>
 
-      {loading && (
+      {!postData && loading && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="skeleton" style={{ height: 120, width: '100%' }} />
           <div className="skeleton" style={{ height: 120, width: '100%' }} />
         </div>
       )}
 
-      {!loading && posts.length === 0 && (
+      {!(!postData && loading) && posts.length === 0 && (
         <div className="empty-state">
           <div className="empty-state-icon" style={{ color: 'var(--success)' }}>
             <CheckCircle2 size={24} />

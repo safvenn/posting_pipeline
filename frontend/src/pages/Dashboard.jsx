@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   RefreshCw,
-  Filter,
   Tv2,
   Clock,
   Layers,
@@ -11,17 +10,14 @@ import {
   AlertTriangle,
   PlayCircle,
   ExternalLink,
-  ChevronRight,
-  Sparkles,
   RotateCcw,
 } from 'lucide-react'
 import StatusBadge from '../components/StatusBadge'
 import RunningJobBanner from '../components/RunningJobBanner'
 import LiveStopwatch from '../components/LiveStopwatch'
-import { getPosts } from '../api/posts'
-import { getChannels } from '../api/channels'
+import { usePostsQuery, useRunningJobQuery, useResetStuck } from '../hooks/usePosts'
+import { useChannelsQuery } from '../hooks/useChannels'
 import { parseUTCDate } from '../utils/timeFormat'
-import client from '../api/client'
 
 const STATUSES = [
   { id: 'all', label: 'All Statuses' },
@@ -46,7 +42,7 @@ function fmtTime(isoStr) {
   })
 }
 
-function StatOverview({ posts }) {
+const StatOverview = React.memo(function StatOverview({ posts }) {
   const total = posts.length
   const inPipeline = posts.filter(p => ['queued', 'cleaning', 'cleaned'].includes(p.status)).length
   const scheduled = posts.filter(p => ['scheduled', 'uploaded'].includes(p.status)).length
@@ -108,68 +104,55 @@ function StatOverview({ posts }) {
       )}
     </div>
   )
-}
+})
 
 export default function Dashboard() {
-  const [posts, setPosts] = useState([])
-  const [channels, setChannels] = useState([])
-  const [total, setTotal] = useState(0)
   const [channel, setChannel] = useState('all')
   const [status, setStatus] = useState('all')
-  const [loading, setLoading] = useState(true)
   const [resetMsg, setResetMsg] = useState('')
   const navigate = useNavigate()
 
-  useEffect(() => {
-    // async-parallel: fetch channels and initial posts concurrently, not serially
-    Promise.all([
-      getChannels().catch(() => []),
-      getPosts({}).catch(() => ({ items: [], total: 0 })),
-    ]).then(([chData, postData]) => {
-      if (Array.isArray(chData)) setChannels(chData)
-      setPosts(postData.items || [])
-      setTotal(postData.total || 0)
-      setLoading(false)
-    })
-  }, [])
-
-  const load = useCallback(() => {
-    setLoading(true)
-    const params = {}
-    if (channel !== 'all') params.channel = channel
-    if (status !== 'all') params.status = status
-    getPosts(params)
-      .then(d => {
-        setPosts(d.items || [])
-        setTotal(d.total || 0)
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false))
+  // Memoized params — stable object reference prevents extra query key changes
+  const postParams = useMemo(() => {
+    const p = {}
+    if (channel !== 'all') p.channel = channel
+    if (status !== 'all') p.status = status
+    return p
   }, [channel, status])
 
-  useEffect(() => { load() }, [load])
+  const {
+    data: postData,
+    isFetching: postsFetching,
+    refetch: refetchPosts,
+  } = usePostsQuery(postParams)
 
-  // Auto-refresh every 8 seconds
-  useEffect(() => {
-    const id = setInterval(load, 8000)
-    return () => clearInterval(id)
-  }, [load])
+  // Channels shared from cache — Dashboard and ScheduleCalendar share one request
+  const { data: channels = [] } = useChannelsQuery()
+
+  // Dedicated 4s-poll for running job — does NOT re-render the whole dashboard
+  const { data: runningJobData } = useRunningJobQuery()
+
+  const resetStuck = useResetStuck()
+
+  const posts = postData?.items || []
+  const total = postData?.total || 0
+
+  const queuedCount = useMemo(() => posts.filter(p => p.status === 'queued').length, [posts])
+  const stuckCount = useMemo(() => posts.filter(p => ['cleaning', 'cleaned'].includes(p.status)).length, [posts])
 
   async function handleResetStuck() {
     try {
-      const res = await client.post('/posts/reset-stuck')
-      setResetMsg(res.data.message || 'Reset complete')
+      const res = await resetStuck.mutateAsync()
+      setResetMsg(res.message || 'Reset complete')
       setTimeout(() => setResetMsg(''), 5000)
-      load()
     } catch (err) {
       setResetMsg('Reset failed: ' + (err?.response?.data?.detail || err.message))
       setTimeout(() => setResetMsg(''), 5000)
     }
   }
 
-  const runningPost = posts.find(p => p.status === 'cleaning')
-  const queuedCount = posts.filter(p => p.status === 'queued').length
-  const stuckCount = posts.filter(p => ['cleaning', 'cleaned'].includes(p.status)).length
+  // Only show skeleton on very first load when no cache exists
+  const isInitialLoad = !postData && postsFetching
 
   return (
     <div>
@@ -200,11 +183,11 @@ export default function Dashboard() {
 
           <button
             className="btn btn-secondary"
-            onClick={load}
-            disabled={loading}
+            onClick={() => refetchPosts()}
+            disabled={postsFetching}
             aria-label="Refresh posts"
           >
-            <RefreshCw size={14} className={loading ? 'spinner' : ''} />
+            <RefreshCw size={14} className={postsFetching ? 'spinner' : ''} />
             <span>Refresh</span>
           </button>
 
@@ -224,8 +207,8 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Active Running Job Banner with live stopwatch */}
-      <RunningJobBanner runningPost={runningPost} queuedCount={queuedCount} />
+      {/* Active Running Job Banner — dedicated 4s-poll endpoint */}
+      <RunningJobBanner runningPost={runningJobData} queuedCount={queuedCount} />
 
       {/* Stats Summary Grid */}
       <StatOverview posts={posts} />
@@ -285,14 +268,14 @@ export default function Dashboard() {
               <th style={{ width: 70 }}>ID</th>
               <th>Post Title</th>
               <th>Channel</th>
-              <th>Status & Timing</th>
+              <th>Status &amp; Timing</th>
               <th>Scheduled Time</th>
               <th>YouTube Link</th>
               <th>Created</th>
             </tr>
           </thead>
           <tbody>
-            {loading && posts.length === 0 && (
+            {isInitialLoad && (
               <tr>
                 <td colSpan={7} style={{ padding: '32px 16px' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -304,7 +287,7 @@ export default function Dashboard() {
               </tr>
             )}
 
-            {!loading && posts.length === 0 && (
+            {!isInitialLoad && posts.length === 0 && (
               <tr>
                 <td colSpan={7}>
                   <div className="empty-state">
@@ -381,7 +364,6 @@ export default function Dashboard() {
                   <td>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-start' }}>
                       <StatusBadge status={p.status} post={p} showTiming={true} />
-                      
                       {p.status === 'cleaning' && (
                         <LiveStopwatch
                           startTime={p.updated_at || p.created_at}
@@ -433,8 +415,13 @@ export default function Dashboard() {
             Showing <strong>{posts.length}</strong> of <strong>{total}</strong> posts
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span>Auto-refreshing (8s)</span>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: 'var(--success)' }} />
+            <span>Auto-refreshing (15s)</span>
+            <span style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              backgroundColor: postsFetching ? 'var(--warning)' : 'var(--success)',
+            }} />
           </div>
         </div>
       </div>

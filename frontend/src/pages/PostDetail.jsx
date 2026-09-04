@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -20,7 +20,7 @@ import {
 import InstagramIcon from '../components/InstagramIcon'
 import StatusBadge from '../components/StatusBadge'
 import LiveStopwatch from '../components/LiveStopwatch'
-import { getPost, retryPost, deletePost, publishInstagramReel } from '../api/posts'
+import { usePostQuery, useRetryPost, useDeletePost, usePublishInstagramReel } from '../hooks/usePosts'
 import { getJobTiming, parseUTCDate } from '../utils/timeFormat'
 
 function fmtTime(iso) {
@@ -69,32 +69,23 @@ function DetailRow({ label, value, mono = false }) {
 export default function PostDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [post, setPost] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [retrying, setRetrying] = useState(false)
-  const [deleting, setDeleting] = useState(false)
-
-  function load() {
-    getPost(id).then(setPost).catch(console.error).finally(() => setLoading(false))
-  }
-
-  useEffect(() => { load() }, [id])
-
-  // Auto-refresh when job is in progress
-  useEffect(() => {
-    if (post && ['queued', 'cleaning'].includes(post.status)) {
-      const poll = setInterval(load, 5000)
-      return () => clearInterval(poll)
-    }
-  }, [post?.status])
-
   const [publishingIg, setPublishingIg] = useState(false)
+
+  // usePostQuery seeds from posts list cache — instant display when navigating from Dashboard
+  // Smart polling: 10s for active statuses, 5min for terminal statuses
+  const { data: post, isFetching: loading, isLoading: isInitialLoading } = usePostQuery(id)
+
+  const retryMutation = useRetryPost()
+  const deleteMutation = useDeletePost()
+  const publishIgMutation = usePublishInstagramReel()
+
+  const retrying = retryMutation.isPending
+  const deleting = deleteMutation.isPending
 
   async function handlePublishInstagram() {
     setPublishingIg(true)
     try {
-      await publishInstagramReel(id)
-      load()
+      await publishIgMutation.mutateAsync(id)
     } catch (e) {
       alert(e.response?.data?.detail || e.message || String(e))
     } finally {
@@ -103,30 +94,25 @@ export default function PostDetail() {
   }
 
   async function handleRetry() {
-    setRetrying(true)
     try {
-      await retryPost(id)
-      load()
+      await retryMutation.mutateAsync(id)
     } catch (e) {
       alert(e.response?.data?.detail || String(e))
-    } finally {
-      setRetrying(false)
     }
   }
 
   async function handleDelete() {
     if (!confirm('Delete this post, its files, and cancel any active processing?')) return
-    setDeleting(true)
     try {
-      await deletePost(id)
+      await deleteMutation.mutateAsync(id)
       navigate('/')
     } catch (e) {
       alert(e.response?.data?.detail || String(e))
-      setDeleting(false)
     }
   }
 
-  if (loading) {
+  // Show skeleton only on initial load when no cached data exists
+  if (isInitialLoading && !post) {
     return (
       <div style={{ maxWidth: 840 }}>
         <div className="page-header">

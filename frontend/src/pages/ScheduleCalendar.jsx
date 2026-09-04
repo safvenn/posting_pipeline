@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import {
   RefreshCw,
   Calendar as CalendarIcon,
@@ -10,13 +10,12 @@ import {
   AlertTriangle,
   CheckCircle2,
   AlertCircle,
-  ArrowRight,
   Trash2,
 } from 'lucide-react'
 import InstagramIcon from '../components/InstagramIcon'
 import StatusBadge from '../components/StatusBadge'
-import { getSchedule, rescheduleSlot, clearFailedSchedules, deleteScheduledVideo } from '../api/schedule'
-import { getChannels } from '../api/channels'
+import { useScheduleQuery, useReschedule, useClearFailedSchedules, useDeleteScheduledVideo } from '../hooks/useSchedule'
+import { useChannelsQuery } from '../hooks/useChannels'
 import { parseUTCDate } from '../utils/timeFormat'
 
 function fmtDate(iso) {
@@ -40,10 +39,7 @@ function fmtTime(iso) {
 }
 
 export default function ScheduleCalendar() {
-  const [slots, setSlots] = useState([])
-  const [channels, setChannels] = useState([])
   const [days, setDays] = useState(7)
-  const [loading, setLoading] = useState(false)
   const [rescheduling, setRescheduling] = useState(false)
   const [draggedItem, setDraggedItem] = useState(null)
   const [dragOverKey, setDragOverKey] = useState(null)
@@ -54,29 +50,24 @@ export default function ScheduleCalendar() {
     setTimeout(() => setNotification(null), 4000)
   }
 
-  function load() {
-    setLoading(true)
-    Promise.all([
-      getSchedule(days),
-      getChannels().catch(() => [])
-    ])
-      .then(([scheduleData, channelsData]) => {
-        setSlots(scheduleData || [])
-        if (Array.isArray(channelsData) && channelsData.length > 0) {
-          setChannels(channelsData)
-        } else {
-          const distinct = Array.from(new Set((scheduleData || []).map(s => s.channel)))
-          setChannels(distinct.map(k => ({ channel: k, display_name: k })))
-        }
-      })
-      .catch(err => {
-        console.error(err)
-        showNotification('error', 'Failed to fetch schedule data.')
-      })
-      .finally(() => setLoading(false))
-  }
+  const {
+    data: slots = [],
+    isFetching: loading,
+    refetch: refetchSchedule,
+  } = useScheduleQuery(days)
 
-  useEffect(() => { load() }, [days])
+  const { data: channelsData = [] } = useChannelsQuery()
+
+  // Derive channels from query data or from slots
+  const channels = channelsData.length > 0
+    ? channelsData
+    : Array.from(new Set((slots || []).map(s => s.channel))).map(k => ({ channel: k, display_name: k }))
+
+  const rescheduleMutation = useReschedule()
+  const clearFailedMutation = useClearFailedSchedules()
+  const deleteVideoMutation = useDeleteScheduledVideo()
+
+  function load() { refetchSchedule() }
 
   // Group slots by date -> channel -> slot_label or off_slot list
   const byDate = {}
@@ -144,7 +135,7 @@ export default function ScheduleCalendar() {
 
     setRescheduling(true)
     try {
-      const res = await rescheduleSlot({
+      const res = await rescheduleMutation.mutateAsync({
         post_id: itemToReschedule.post_id,
         youtube_video_id: itemToReschedule.youtube_video_id,
         channel: channelKey || itemToReschedule.channel,
@@ -152,7 +143,6 @@ export default function ScheduleCalendar() {
       })
 
       showNotification('success', res.message || 'Video successfully rescheduled!')
-      load()
     } catch (err) {
       const msg = err.response?.data?.detail || err.message || 'Failed to reschedule video.'
       showNotification('error', msg)
@@ -165,9 +155,8 @@ export default function ScheduleCalendar() {
   async function handleClearFailed() {
     if (!confirm('Clear schedule timestamps from any failed posts so slots become available?')) return
     try {
-      const res = await clearFailedSchedules()
+      const res = await clearFailedMutation.mutateAsync()
       showNotification('success', res.message || 'Cleared failed schedules')
-      load()
     } catch (err) {
       showNotification('error', 'Failed to clear failed schedules')
     }
@@ -180,19 +169,15 @@ export default function ScheduleCalendar() {
     if (!window.confirm(confirmMsg)) return
 
     try {
-      setLoading(true)
-      const res = await deleteScheduledVideo({
+      const res = await deleteVideoMutation.mutateAsync({
         post_id: item.post_id,
         youtube_video_id: item.youtube_video_id,
         channel: item.channel,
       })
       showNotification('success', res.message || 'Scheduled video deleted successfully.')
-      load()
     } catch (err) {
       const msg = err.response?.data?.detail || err.message || 'Failed to delete scheduled video.'
       showNotification('error', msg)
-    } finally {
-      setLoading(false)
     }
   }
 

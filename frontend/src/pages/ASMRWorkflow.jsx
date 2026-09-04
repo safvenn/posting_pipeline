@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import {
   Sparkles,
   Play,
@@ -14,7 +14,18 @@ import {
   Clock,
   ExternalLink,
 } from 'lucide-react'
+import {
+  useASMRRunsQuery,
+  useASMRFoodsQuery,
+  useASMRFoodStatsQuery,
+  useASMRContentQuery,
+  useTriggerASMRWorkflow,
+  useAddFood,
+  useDeleteFood,
+} from '../hooks/useASMR'
 import client from '../api/client'
+import { useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from '../lib/queryClient'
 import { parseUTCDate } from '../utils/timeFormat'
 
 const statusMap = {
@@ -46,41 +57,34 @@ function formatDate(d) {
 }
 
 export default function ASMRWorkflow() {
-  const [runs, setRuns] = useState([])
-  const [foods, setFoods] = useState([])
-  const [foodStats, setFoodStats] = useState(null)
-  const [content, setContent] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [triggerLoading, setTriggerLoading] = useState(false)
   const [newFood, setNewFood] = useState('')
   const [tab, setTab] = useState('runs')
+  const qc = useQueryClient()
 
-  useEffect(() => { fetchAll() }, [])
+  const { data: runs = [], isFetching: runsLoading, refetch: refetchRuns } = useASMRRunsQuery()
+  const { data: foods = [], isFetching: foodsLoading, refetch: refetchFoods } = useASMRFoodsQuery()
+  const { data: foodStats } = useASMRFoodStatsQuery()
+  const { data: content = [], isFetching: contentLoading } = useASMRContentQuery()
 
-  async function fetchAll() {
-    setLoading(true)
-    try {
-      const [runsRes, foodsRes, statsRes, contentRes] = await Promise.all([
-        client.get('/asmr/runs').catch(() => ({ data: { items: [] } })),
-        client.get('/asmr/foods?limit=50').catch(() => ({ data: { items: [] } })),
-        client.get('/asmr/foods/stats').catch(() => ({ data: null })),
-        client.get('/asmr/content').catch(() => ({ data: { items: [] } })),
-      ])
-      setRuns(runsRes.data?.items || [])
-      setFoods(foodsRes.data?.items || [])
-      setFoodStats(statsRes.data || null)
-      setContent(contentRes.data?.items || [])
-    } catch (e) {
-      console.error('Fetch error:', e)
-    }
-    setLoading(false)
+  const loading = runsLoading || foodsLoading || contentLoading
+
+  const triggerMutation = useTriggerASMRWorkflow()
+  const addFoodMutation = useAddFood()
+  const deleteFoodMutation = useDeleteFood()
+
+  const [triggerLoading, setTriggerLoading] = useState(false)
+
+  function fetchAll() {
+    refetchRuns()
+    refetchFoods()
+    qc.invalidateQueries({ queryKey: queryKeys.asmrContent() })
+    qc.invalidateQueries({ queryKey: ['asmrFoodStats'] })
   }
 
   async function triggerWorkflow(dryRun = false) {
     setTriggerLoading(true)
     try {
-      await client.post('/asmr/run', { dry_run: dryRun })
-      setTimeout(fetchAll, 1500)
+      await triggerMutation.mutateAsync({ dry_run: dryRun })
     } catch (e) {
       alert('Trigger failed: ' + (e.response?.data?.detail || e.message))
     }
@@ -90,7 +94,7 @@ export default function ASMRWorkflow() {
   async function retryRun(runId) {
     try {
       await client.post(`/asmr/runs/${runId}/retry`)
-      setTimeout(fetchAll, 1500)
+      setTimeout(refetchRuns, 1500)
     } catch (e) {
       alert('Retry failed: ' + (e.response?.data?.detail || e.message))
     }
@@ -99,9 +103,8 @@ export default function ASMRWorkflow() {
   async function addFood() {
     if (!newFood.trim()) return
     try {
-      await client.post('/asmr/foods', { name: newFood.trim() })
+      await addFoodMutation.mutateAsync(newFood.trim())
       setNewFood('')
-      fetchAll()
     } catch (e) {
       alert('Add failed: ' + (e.response?.data?.detail || e.message))
     }
@@ -109,8 +112,7 @@ export default function ASMRWorkflow() {
 
   async function retireFood(id) {
     try {
-      await client.delete(`/asmr/foods/${id}`)
-      fetchAll()
+      await deleteFoodMutation.mutateAsync(id)
     } catch (e) {
       alert('Retire failed: ' + (e.response?.data?.detail || e.message))
     }

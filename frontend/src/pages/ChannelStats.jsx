@@ -20,7 +20,10 @@ import {
   EyeOff,
 } from 'lucide-react'
 import InstagramIcon from '../components/InstagramIcon'
+import { useChannelsQuery } from '../hooks/useChannels'
 import client, { formatErrorMessage } from '../api/client'
+import { useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from '../lib/queryClient'
 import { parseUTCDate } from '../utils/timeFormat'
 
 function fmtNumber(n) {
@@ -251,9 +254,17 @@ function ChannelCard({ ch, onDelete, onConnect, onEdit }) {
 }
 
 export default function ChannelStats() {
-  const [channels, setChannels] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const qc = useQueryClient()
+  const {
+    data: channels = [],
+    isFetching: loading,
+    error: channelError,
+    refetch: refetchChannels,
+  } = useChannelsQuery()
+
+  const error = channelError ? formatErrorMessage(channelError) : null
+
+  function load() { refetchChannels() }
 
   // Edit Modal State
   const [showEditModal, setShowEditModal] = useState(false)
@@ -276,20 +287,6 @@ export default function ChannelStats() {
   const [availableTabs, setAvailableTabs] = useState([])
   const [loadingSheets, setLoadingSheets] = useState(false)
   const [loadingTabs, setLoadingTabs] = useState(false)
-
-  function load() {
-    setLoading(true)
-    setError(null)
-    client
-      .get('/channels')
-      .then(res => setChannels(res.data))
-      .catch(err => setError(formatErrorMessage(err)))
-      .finally(() => setLoading(false))
-  }
-
-  useEffect(() => {
-    load()
-  }, [])
 
   async function handleConnectGlobal() {
     try {
@@ -399,7 +396,8 @@ export default function ChannelStats() {
     try {
       await client.put(`/channels/${editChannel.channel}`, form)
       setShowEditModal(false)
-      load()
+      // Invalidate shared channels cache — all pages using useChannelsQuery update
+      qc.invalidateQueries({ queryKey: queryKeys.channels() })
     } catch (e) {
       alert('Error updating channel: ' + (e.response?.data?.detail || e.message))
     } finally {
@@ -411,7 +409,7 @@ export default function ChannelStats() {
     if (!window.confirm(`Delete channel "${channelKey}"?`)) return
     try {
       await client.delete(`/channels/${channelKey}`)
-      load()
+      qc.invalidateQueries({ queryKey: queryKeys.channels() })
     } catch (e) {
       alert('Error deleting channel: ' + (e.response?.data?.detail || e.message))
     }
