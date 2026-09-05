@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     # Generate a strong random value and set in .env: API_KEY=<random-64-char-hex>
     api_key: str = ""
 
+    # ---- JWT single-user auth ----
+    admin_username: str = "adminn"
+    admin_password_hash: str = ""          # bcrypt hash of the admin password
+    jwt_secret: str = ""                   # 64-char hex random secret
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 15
+    refresh_token_expire_days: int = 30
+
     # ASMR Content Workflow
     asmr_dry_run: bool = False
     asmr_schedule_cron: str = "0 9 * * *"

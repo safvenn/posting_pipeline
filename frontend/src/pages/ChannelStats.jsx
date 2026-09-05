@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+﻿import React, { useState, useEffect } from 'react'
 import {
   RefreshCw,
   CheckCircle,
@@ -69,7 +69,7 @@ function ChannelCard({ ch, onDelete, onConnect, onEdit }) {
             <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: 15, letterSpacing: '-0.01em' }}>
               {ch.display_name || ch.channel}
             </div>
-            <div className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            <div className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               Key: {ch.channel}
             </div>
           </div>
@@ -82,7 +82,7 @@ function ChannelCard({ ch, onDelete, onConnect, onEdit }) {
             gap: 5,
             padding: '3px 8px',
             borderRadius: 6,
-            fontSize: 11,
+            fontSize: 12,
             fontWeight: 600,
             backgroundColor: ch.auth_ok ? 'var(--success-subtle)' : 'var(--error-subtle)',
             borderColor: ch.auth_ok ? 'var(--success-border)' : 'var(--error-border)',
@@ -137,10 +137,10 @@ function ChannelCard({ ch, onDelete, onConnect, onEdit }) {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
           <InstagramIcon size={14} color={ch.instagram_enabled && ch.instagram_ok ? '#e1306c' : 'var(--text-muted)'} />
-          <span style={{ fontSize: 11.5, fontWeight: 600, color: ch.instagram_enabled && ch.instagram_ok ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: ch.instagram_enabled && ch.instagram_ok ? 'var(--text-primary)' : 'var(--text-muted)' }}>
             Instagram Reels:
           </span>
-          <span style={{ fontSize: 11.5, color: ch.instagram_enabled && ch.instagram_ok ? '#e1306c' : 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+          <span style={{ fontSize: 12.5, color: ch.instagram_enabled && ch.instagram_ok ? '#e1306c' : 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
             {ch.instagram_enabled && ch.instagram_ok ? (ch.instagram_username ? `@${ch.instagram_username}` : 'Enabled') : 'Not Configured'}
           </span>
         </div>
@@ -148,7 +148,7 @@ function ChannelCard({ ch, onDelete, onConnect, onEdit }) {
         <button
           onClick={() => onEdit(ch)}
           className="btn btn-ghost btn-xs"
-          style={{ fontSize: 11, color: 'var(--accent-primary)', padding: '2px 6px' }}
+          style={{ fontSize: 12, color: 'var(--accent-primary)', padding: '2px 6px' }}
         >
           {ch.instagram_enabled && ch.instagram_ok ? 'Configured' : 'Setup'}
         </button>
@@ -187,7 +187,7 @@ function ChannelCard({ ch, onDelete, onConnect, onEdit }) {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          fontSize: 11.5,
+          fontSize: 12.5,
           color: 'var(--text-secondary)',
           marginBottom: 14,
         }}>
@@ -210,7 +210,7 @@ function ChannelCard({ ch, onDelete, onConnect, onEdit }) {
 
       {/* Recent Uploads */}
       <div>
-        <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>
           Recent YouTube Uploads ({ch.recent_uploads?.length || 0})
         </div>
         {ch.recent_uploads && ch.recent_uploads.length > 0 ? (
@@ -225,7 +225,7 @@ function ChannelCard({ ch, onDelete, onConnect, onEdit }) {
                   padding: '6px 8px',
                   borderRadius: 6,
                   backgroundColor: 'var(--bg-subtle)',
-                  fontSize: 11.5,
+                  fontSize: 12.5,
                 }}
               >
                 <a
@@ -237,14 +237,14 @@ function ChannelCard({ ch, onDelete, onConnect, onEdit }) {
                 >
                   {u.title || u.video_id}
                 </a>
-                <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
+                <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                   {fmtTime(u.published_at)}
                 </span>
               </div>
             ))}
           </div>
         ) : (
-          <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+          <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
             No recent uploads found.
           </div>
         )}
@@ -495,7 +495,7 @@ export default function ChannelStats() {
                 <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
                   Configure Channel: {editChannel.display_name || editChannel.channel}
                 </h2>
-                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
+                <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 2 }}>
                   Set YouTube sync, Google Sheet ID, and Instagram Reels auto-posting
                 </div>
               </div>
@@ -547,7 +547,7 @@ export default function ChannelStats() {
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 10 }}>
-                  <label className="form-label" style={{ fontSize: 11.5 }}>Instagram Account ID (Business/Creator)</label>
+                  <label className="form-label" style={{ fontSize: 12.5 }}>Instagram Account ID (Business/Creator)</label>
                   <input
                     className="form-input"
                     value={form.instagram_account_id}
@@ -558,7 +558,7 @@ export default function ChannelStats() {
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 10 }}>
-                  <label className="form-label" style={{ fontSize: 11.5 }}>Meta Graph API Access Token (Long-Lived)</label>
+                  <label className="form-label" style={{ fontSize: 12.5 }}>Meta Graph API Access Token (Long-Lived)</label>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <input
                       type={showToken ? 'text' : 'password'}
@@ -585,7 +585,7 @@ export default function ChannelStats() {
                     className="btn btn-secondary btn-sm"
                     onClick={handleTestInstagram}
                     disabled={testingIg || (!form.instagram_access_token && !form.instagram_account_id)}
-                    style={{ fontSize: 11 }}
+                    style={{ fontSize: 12 }}
                   >
                     <RefreshCw size={12} className={testingIg ? 'spinner' : ''} />
                     <span>{testingIg ? 'Testing...' : 'Test Connection'}</span>
@@ -593,7 +593,7 @@ export default function ChannelStats() {
 
                   {igTestResult && (
                     <span style={{
-                      fontSize: 11.5,
+                      fontSize: 12.5,
                       fontWeight: 600,
                       color: igTestResult.success ? 'var(--success)' : 'var(--error)',
                       display: 'inline-flex',

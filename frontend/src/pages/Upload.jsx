@@ -262,16 +262,16 @@ export default function Upload() {
   }
 
   return (
-    <div style={{ maxWidth: 780 }}>
+    <div style={{ maxWidth: 760, width: '100%' }}>
       {/* Header */}
       <div className="page-header">
         <div>
           <h1 className="page-title">
-            <UploadIcon size={22} color="var(--accent-primary)" />
+            <UploadIcon size={20} color="var(--accent-primary)" />
             Upload Video
           </h1>
           <div className="page-subtitle">
-            Ingest raw video files. Titles, descriptions, and tags will automatically sync from the selected Google Sheet row.
+            Ingest raw video files. Titles, descriptions, and tags sync automatically from the selected Google Sheet row.
           </div>
         </div>
       </div>
@@ -282,12 +282,12 @@ export default function Upload() {
           style={{
             backgroundColor: 'var(--bg-card)',
             border: `2px dashed ${dragOver ? 'var(--accent-primary)' : 'var(--border-medium)'}`,
-            borderRadius: 12,
-            padding: (file || videoUrl) ? 16 : '48px 24px',
+            borderRadius: 8,
+            padding: (file || videoUrl) ? 14 : '40px 24px',
             textAlign: 'center',
             cursor: (file || videoUrl) ? 'default' : 'pointer',
             transition: 'all var(--transition-fast)',
-            marginBottom: 20,
+            marginBottom: 16,
           }}
           onDragOver={e => { e.preventDefault(); setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
@@ -381,7 +381,7 @@ export default function Upload() {
         </div>
 
         {/* Configuration Card */}
-        <div className="card" style={{ padding: 24, marginBottom: 20 }}>
+        <div className="card" style={{ padding: 22, marginBottom: 16 }}>
           <div className="section-title">
             <Tv2 size={16} color="var(--accent-primary)" />
             Target Channel &amp; Google Sheet Row Binding
@@ -493,7 +493,7 @@ export default function Upload() {
             ) : sheetPreview ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
                     Title (From Sheet Row #{sheetPreview.id})
                   </label>
                   <input
@@ -505,7 +505,7 @@ export default function Upload() {
                 </div>
 
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
                     Description
                   </label>
                   <textarea
@@ -518,7 +518,7 @@ export default function Upload() {
                 </div>
 
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
                     Tags (semicolon-separated)
                   </label>
                   <input

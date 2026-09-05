@@ -69,7 +69,7 @@ export default function FailedJobs() {
   }
 
   return (
-    <div>
+    <div style={{ width: '100%' }}>
       {/* Header */}
       <div className="page-header">
         <div>
@@ -168,7 +168,7 @@ export default function FailedJobs() {
                     {p.enriched_title || p.title}
                   </div>
 
-                  <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 12, display: 'flex', gap: 12 }}>
+                  <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 12, display: 'flex', gap: 12 }}>
                     <span>Created: {fmtTime(p.created_at)}</span>
                     <span>•</span>
                     <span>Updated: {fmtTime(p.updated_at)}</span>

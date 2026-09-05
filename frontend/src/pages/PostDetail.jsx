@@ -42,21 +42,22 @@ function DetailRow({ label, value, mono = false }) {
   return (
     <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
       <td style={{
-        padding: '12px 0',
+        padding: '11px 0',
         color: 'var(--text-muted)',
-        fontSize: 11.5,
+        fontSize: 12,
         fontWeight: 600,
         textTransform: 'uppercase',
-        letterSpacing: '0.04em',
+        letterSpacing: '0.05em',
         verticalAlign: 'top',
-        width: 170,
+        width: 160,
+        whiteSpace: 'nowrap',
       }}>
         {label}
       </td>
       <td style={{
-        padding: '12px 0 12px 16px',
+        padding: '11px 0 11px 14px',
         color: 'var(--text-primary)',
-        fontSize: 12.5,
+        fontSize: 13,
         fontFamily: mono ? 'var(--font-mono)' : 'inherit',
         wordBreak: 'break-all',
       }}>
@@ -145,7 +146,7 @@ export default function PostDetail() {
   const channelName = post.channel_display_name || post.channel?.replace(/_/g, ' ')
 
   return (
-    <div style={{ maxWidth: 840 }}>
+    <div style={{ maxWidth: 840, width: '100%' }}>
       {/* Top Header */}
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>

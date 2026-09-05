@@ -18,6 +18,7 @@ from backend.database import Base, engine
 from backend.routers import channels, posts, schedule
 from backend.routers.asmr import router as asmr_router, food_router as asmr_food_router
 from backend.routers.extension import router as extension_router
+from backend.routers.auth import router as auth_router, is_valid_token_or_key
 from backend.jobs.job_queue import run_serial_queue
 from backend.jobs.asmr_workflow_job import run_asmr_workflow_job
 from backend.jobs.instagram_job import run_instagram_publish_job
@@ -144,21 +145,26 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # ---- Bearer-token auth dependency ----
+    # ---- Bearer-token / JWT auth dependency ----
     _bearer = HTTPBearer(auto_error=False)
 
-    def require_api_key(
+    def require_auth(
         credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
     ) -> None:
-        """Reject requests that don't carry the configured API key."""
-        expected = settings.api_key
-        if not expected:
-            # No key configured → auth disabled (dev mode, local-only)
+        """Reject requests that don't carry the configured API key or a valid JWT access token."""
+        # If neither API key nor JWT is configured -> dev mode / local auth disabled
+        if not settings.api_key and not settings.jwt_secret:
             return
-        if not credentials or credentials.credentials != expected:
+        if not credentials or not credentials.credentials:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or missing API key",
+                detail="Not authenticated",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if not is_valid_token_or_key(credentials.credentials):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired token / API key",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
@@ -168,12 +174,15 @@ def create_app() -> FastAPI:
     # Public extension ingest — no auth (local/self-hosted only)
     app.include_router(extension_router)
 
-    # Routers (all protected by api-key dependency)
-    app.include_router(posts.router,    dependencies=[Depends(require_api_key)])
-    app.include_router(channels.router, dependencies=[Depends(require_api_key)])
-    app.include_router(schedule.router, dependencies=[Depends(require_api_key)])
-    app.include_router(asmr_router,     dependencies=[Depends(require_api_key)])
-    app.include_router(asmr_food_router, dependencies=[Depends(require_api_key)])
+    # Auth router — public (login/refresh must be reachable unauthenticated)
+    app.include_router(auth_router)
+
+    # Routers (protected by API key or JWT access token)
+    app.include_router(posts.router,    dependencies=[Depends(require_auth)])
+    app.include_router(channels.router, dependencies=[Depends(require_auth)])
+    app.include_router(schedule.router, dependencies=[Depends(require_auth)])
+    app.include_router(asmr_router,     dependencies=[Depends(require_auth)])
+    app.include_router(asmr_food_router, dependencies=[Depends(require_auth)])
 
     # Public health endpoint — no auth required
     @app.get("/api/health")

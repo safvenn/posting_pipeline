@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+﻿import React, { useState } from 'react'
 import {
   Sparkles,
   Play,
@@ -29,18 +29,18 @@ import { queryKeys } from '../lib/queryClient'
 import { parseUTCDate } from '../utils/timeFormat'
 
 const statusMap = {
-  pending: { label: 'Pending', bg: 'rgba(111, 120, 133, 0.15)', color: 'var(--text-secondary)' },
-  selecting_food: { label: 'Selecting Food', bg: 'var(--info-subtle)', color: 'var(--info)' },
-  generating_content: { label: 'Generating Content', bg: 'var(--accent-subtle)', color: 'var(--accent-primary)' },
-  validating_content: { label: 'Validating Content', bg: 'var(--accent-subtle)', color: 'var(--accent-primary)' },
-  generating_video: { label: 'Generating Video', bg: 'var(--accent-subtle)', color: 'var(--accent-primary)' },
-  video_ready: { label: 'Video Ready', bg: 'var(--info-subtle)', color: 'var(--info)' },
-  publishing: { label: 'Publishing', bg: 'var(--warning-subtle)', color: 'var(--warning)' },
-  published: { label: 'Published', bg: 'var(--success-subtle)', color: 'var(--success)' },
-  notified: { label: 'Notified', bg: 'var(--success-subtle)', color: '#6EE7B7' },
-  failed: { label: 'Failed', bg: 'var(--error-subtle)', color: 'var(--error)' },
-  retry_pending: { label: 'Retry Pending', bg: 'var(--warning-subtle)', color: 'var(--warning)' },
-  dry_run_complete: { label: 'Dry Run Done', bg: 'rgba(77, 163, 255, 0.15)', color: 'var(--info)' },
+  pending:            { label: 'Pending',            bg: 'var(--bg-elevated)',      color: 'var(--text-secondary)' },
+  selecting_food:     { label: 'Selecting Food',     bg: 'var(--info-subtle)',      color: 'var(--info)' },
+  generating_content: { label: 'Generating Content', bg: 'var(--accent-subtle)',    color: 'var(--accent-primary)' },
+  validating_content: { label: 'Validating Content', bg: 'var(--accent-subtle)',    color: 'var(--accent-primary)' },
+  generating_video:   { label: 'Generating Video',   bg: 'var(--accent-subtle)',    color: 'var(--accent-primary)' },
+  video_ready:        { label: 'Video Ready',        bg: 'var(--info-subtle)',      color: 'var(--info)' },
+  publishing:         { label: 'Publishing',         bg: 'var(--warning-subtle)',   color: 'var(--warning)' },
+  published:          { label: 'Published',          bg: 'var(--success-subtle)',   color: 'var(--success)' },
+  notified:           { label: 'Notified',           bg: 'var(--success-subtle)',   color: '#6EE7B7' },
+  failed:             { label: 'Failed',             bg: 'var(--error-subtle)',     color: 'var(--error)' },
+  retry_pending:      { label: 'Retry Pending',      bg: 'var(--warning-subtle)',   color: 'var(--warning)' },
+  dry_run_complete:   { label: 'Dry Run Done',       bg: 'var(--info-subtle)',      color: 'var(--info)' },
 }
 
 function formatDate(d) {
@@ -128,7 +128,7 @@ export default function ASMRWorkflow() {
           gap: 4,
           padding: '2px 7px',
           borderRadius: 4,
-          fontSize: 11,
+          fontSize: 12,
           fontWeight: 600,
           backgroundColor: s.bg,
           color: s.color,
@@ -279,7 +279,7 @@ export default function ASMRWorkflow() {
               )}
               {runs.map(r => (
                 <tr key={r.id}>
-                  <td className="mono" style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>
+                  <td className="mono" style={{ color: 'var(--text-muted)', fontSize: 12.5 }}>
                     #{r.id}
                   </td>
                   <td style={{ color: 'var(--text-secondary)', textTransform: 'capitalize' }}>
@@ -288,16 +288,16 @@ export default function ASMRWorkflow() {
                   <td>
                     <StatusPill status={r.status} />
                   </td>
-                  <td className="mono" style={{ fontSize: 11 }}>
+                  <td className="mono" style={{ fontSize: 12 }}>
                     {r.dry_run ? <span style={{ color: 'var(--info)' }}>✓ Yes</span> : <span style={{ color: 'var(--text-muted)' }}>No</span>}
                   </td>
-                  <td className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  <td className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                     {formatDate(r.started_at)}
                   </td>
-                  <td className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  <td className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                     {formatDate(r.completed_at)}
                   </td>
-                  <td className="mono" style={{ fontSize: 11, color: 'var(--error)', maxWidth: 220 }} className="truncate-text">
+                  <td className="mono" style={{ fontSize: 12, color: 'var(--error)', maxWidth: 220 }} className="truncate-text">
                     {r.error_message || '—'}
                   </td>
                   <td style={{ textAlign: 'right' }}>
@@ -337,21 +337,21 @@ export default function ASMRWorkflow() {
                   </span>
                   <StatusPill status={c.status} />
                 </div>
-                <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                   {formatDate(c.created_at)}
                 </span>
               </div>
 
               {c.title && (
                 <div style={{ marginBottom: 8 }}>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Title: </span>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Title: </span>
                   <span style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: 13 }}>{c.title}</span>
                 </div>
               )}
 
               {c.description && (
                 <div style={{ marginBottom: 10 }}>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Description: </span>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Description: </span>
                   <p style={{ color: 'var(--text-secondary)', fontSize: 12, marginTop: 4, lineHeight: 1.5 }}>
                     {c.description}
                   </p>
@@ -371,7 +371,7 @@ export default function ASMRWorkflow() {
                         border: '1px solid var(--border-subtle)',
                         padding: '2px 7px',
                         borderRadius: 4,
-                        fontSize: 10.5,
+                        fontSize: 12,
                         color: 'var(--text-muted)',
                       }}
                     >
@@ -443,7 +443,7 @@ export default function ASMRWorkflow() {
                           display: 'inline-flex',
                           padding: '2px 6px',
                           borderRadius: 4,
-                          fontSize: 10.5,
+                          fontSize: 12,
                           fontWeight: 600,
                           backgroundColor:
                             f.status === 'available' ? 'var(--success-subtle)' :
@@ -457,10 +457,10 @@ export default function ASMRWorkflow() {
                         {f.status}
                       </span>
                     </td>
-                    <td className="mono" style={{ fontSize: 11.5, color: 'var(--text-secondary)' }}>
+                    <td className="mono" style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
                       {f.cycle_number}
                     </td>
-                    <td className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    <td className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                       {formatDate(f.used_at)}
                     </td>
                     <td style={{ textAlign: 'right' }}>

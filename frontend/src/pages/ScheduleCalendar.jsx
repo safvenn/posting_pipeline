@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+﻿import React, { useState } from 'react'
 import {
   RefreshCw,
   Calendar as CalendarIcon,
@@ -40,6 +40,7 @@ function fmtTime(iso) {
 
 export default function ScheduleCalendar() {
   const [days, setDays] = useState(7)
+  const [activeChannel, setActiveChannel] = useState('all')
   const [rescheduling, setRescheduling] = useState(false)
   const [draggedItem, setDraggedItem] = useState(null)
   const [dragOverKey, setDragOverKey] = useState(null)
@@ -86,7 +87,8 @@ export default function ScheduleCalendar() {
   }
 
   const dates = Object.keys(byDate).sort()
-  const channelKeys = channels.length > 0 ? channels.map(c => c.channel) : Array.from(new Set(slots.map(s => s.channel)))
+  const allChannelKeys = channels.length > 0 ? channels.map(c => c.channel) : Array.from(new Set(slots.map(s => s.channel)))
+  const channelKeys = activeChannel === 'all' ? allChannelKeys : allChannelKeys.filter(k => k === activeChannel)
 
   // Drag & Drop Handlers
   function handleDragStart(e, item) {
@@ -253,7 +255,7 @@ export default function ScheduleCalendar() {
       </div>
 
       {/* Legend & Viral Timing Info Card */}
-      <div className="card" style={{ padding: '14px 20px', marginBottom: 20 }}>
+      <div className="card" style={{ padding: '14px 20px', marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 14 }}>
           <div style={{ display: 'flex', gap: 18, alignItems: 'center', fontSize: 12, flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
@@ -270,12 +272,83 @@ export default function ScheduleCalendar() {
             </div>
           </div>
 
-          <div style={{ fontSize: 11.5, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ fontSize: 12.5, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
             <Sparkles size={13} color="var(--accent-primary)" />
             <span>Slots synced with live YouTube Studio data in real-time.</span>
           </div>
         </div>
       </div>
+
+      {/* Channel Switcher */}
+      {allChannelKeys.length > 1 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginRight: 4 }}>
+            Channel:
+          </span>
+          <button
+            onClick={() => setActiveChannel('all')}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              height: 32,
+              padding: '0 12px',
+              borderRadius: 8,
+              fontSize: 12,
+              fontWeight: 600,
+              border: activeChannel === 'all' ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+              background: activeChannel === 'all' ? 'var(--accent-primary)' : 'var(--bg-card)',
+              color: activeChannel === 'all' ? '#fff' : 'var(--text-muted)',
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}
+          >
+            <Tv2 size={13} />
+            All Channels ({allChannelKeys.length})
+          </button>
+          {channels.map(c => {
+            const isActive = activeChannel === c.channel
+            const count = slots.filter(s => s.channel === c.channel && ['scheduled'].includes(s.status)).length
+            return (
+              <button
+                key={c.channel}
+                onClick={() => setActiveChannel(isActive ? 'all' : c.channel)}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  height: 32,
+                  padding: '0 12px',
+                  borderRadius: 8,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  border: isActive ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                  background: isActive ? 'rgba(99, 102, 241, 0.12)' : 'var(--bg-card)',
+                  color: isActive ? 'var(--accent-primary)' : 'var(--text-muted)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+              >
+                <Tv2 size={13} color={isActive ? 'var(--accent-primary)' : 'var(--text-muted)'} />
+                <span>{c.display_name || c.channel}</span>
+                {count > 0 && (
+                  <span style={{
+                    fontSize: 12,
+                    fontFamily: 'var(--font-mono)',
+                    fontWeight: 700,
+                    background: isActive ? 'var(--accent-primary)' : 'var(--bg-elevated)',
+                    color: isActive ? '#fff' : 'var(--text-muted)',
+                    padding: '1px 5px',
+                    borderRadius: 4,
+                  }}>
+                    {count}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {/* Calendar Matrix Grid */}
       <div className="data-table-container">
@@ -309,7 +382,7 @@ export default function ScheduleCalendar() {
                       key={`${c.channel}-${i}`}
                       style={{
                         textAlign: 'center',
-                        fontSize: 10.5,
+                        fontSize: 12,
                         fontWeight: 600,
                         color: 'var(--text-muted)',
                         padding: '8px 10px',
@@ -335,7 +408,7 @@ export default function ScheduleCalendar() {
                         <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 }}>
                           {fmtDate(d + 'T00:00:00')}
                         </div>
-                        <div className="mono" style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                        <div className="mono" style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
                           {d}
                         </div>
                       </td>
@@ -360,11 +433,11 @@ export default function ScheduleCalendar() {
                                 borderRadius: 8,
                                 padding: '12px 10px',
                                 textAlign: 'center',
-                                fontSize: 11,
+                                fontSize: 12,
                                 color: 'var(--text-muted)',
                               }}>
                                 <span>{defaultTimeLabel}</span>
-                                <div style={{ fontSize: 10, color: 'var(--text-subtle)', marginTop: 2 }}>Available Slot</div>
+                                <div style={{ fontSize: 12, color: 'var(--text-subtle)', marginTop: 2 }}>Available Slot</div>
                               </div>
                             </td>
                           )
@@ -423,18 +496,54 @@ export default function ScheduleCalendar() {
                                 }}
                                 className={isPosted ? '' : 'scheduled-card-hover'}
                               >
-                                {s.thumbnail_url && (
-                                  <div style={{ width: '100%', height: 68, borderRadius: 5, overflow: 'hidden', marginBottom: 8, backgroundColor: '#000' }}>
+                                {/* Thumbnail — always shown */}
+                                <div style={{
+                                  width: '100%',
+                                  aspectRatio: '16 / 9',
+                                  borderRadius: 6,
+                                  overflow: 'hidden',
+                                  marginBottom: 8,
+                                  backgroundColor: '#0d1117',
+                                  border: '1px solid var(--border-subtle)',
+                                  position: 'relative',
+                                  flexShrink: 0,
+                                }}>
+                                  {s.thumbnail_url ? (
                                     <img
                                       src={s.thumbnail_url}
-                                      alt=""
-                                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                      alt={s.post_title || ''}
+                                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                                     />
-                                  </div>
-                                )}
+                                  ) : (
+                                    <div style={{
+                                      width: '100%',
+                                      height: '100%',
+                                      display: 'flex',
+                                      flexDirection: 'column',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      gap: 4,
+                                      background: 'linear-gradient(135deg, #12161f 0%, #1a1e2b 100%)',
+                                    }}>
+                                      <span style={{
+                                        fontSize: 22,
+                                        fontWeight: 700,
+                                        color: 'var(--accent-primary)',
+                                        opacity: 0.4,
+                                        fontFamily: 'var(--font-sans)',
+                                        lineHeight: 1,
+                                      }}>
+                                        {(s.post_title || '?').charAt(0).toUpperCase()}
+                                      </span>
+                                      <span style={{ fontSize: 9, color: 'var(--text-subtle)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.6 }}>
+                                        No Thumbnail
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
 
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10.5, color: isPosted ? 'var(--success, #22c55e)' : 'var(--accent-primary)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: isPosted ? 'var(--success, #22c55e)' : 'var(--accent-primary)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
                                     <Clock size={11} />
                                     <span>{fmtTime(s.scheduled_at)}</span>
                                   </div>
@@ -443,7 +552,7 @@ export default function ScheduleCalendar() {
                                     {isPosted ? (
                                       <span
                                         style={{
-                                          fontSize: 10,
+                                          fontSize: 12,
                                           fontWeight: 700,
                                           color: 'var(--success, #22c55e)',
                                           display: 'inline-flex',
@@ -516,7 +625,7 @@ export default function ScheduleCalendar() {
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         style={{
-                                          fontSize: 10,
+                                          fontSize: 12,
                                           color: '#e1306c',
                                           display: 'inline-flex',
                                           alignItems: 'center',
@@ -537,7 +646,7 @@ export default function ScheduleCalendar() {
                                     ) : s.instagram_status === 'pending' ? (
                                       <span
                                         style={{
-                                          fontSize: 10,
+                                          fontSize: 12,
                                           color: '#e1306c',
                                           display: 'inline-flex',
                                           alignItems: 'center',
@@ -555,7 +664,7 @@ export default function ScheduleCalendar() {
                                     ) : s.instagram_enabled ? (
                                       <span
                                         style={{
-                                          fontSize: 10,
+                                          fontSize: 12,
                                           color: '#e1306c',
                                           display: 'inline-flex',
                                           alignItems: 'center',
@@ -579,7 +688,7 @@ export default function ScheduleCalendar() {
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         style={{
-                                          fontSize: 10,
+                                          fontSize: 12,
                                           color: 'var(--accent-primary)',
                                           display: 'inline-flex',
                                           alignItems: 'center',
@@ -603,14 +712,14 @@ export default function ScheduleCalendar() {
                                   borderRadius: 8,
                                   padding: '14px 10px',
                                   textAlign: 'center',
-                                  fontSize: 11,
+                                  fontSize: 12,
                                   color: isDragTarget ? 'var(--accent-primary)' : 'var(--text-muted)',
                                   transition: 'all 0.2s',
                                   cursor: draggedItem ? 'copy' : 'default',
                                 }}
                               >
-                                <div style={{ fontWeight: 600, fontSize: 11 }}>{defaultTimeLabel}</div>
-                                <div style={{ fontSize: 10, color: isDragTarget ? 'var(--accent-primary)' : 'var(--success, #22c55e)', marginTop: 2 }}>
+                                <div style={{ fontWeight: 600, fontSize: 12 }}>{defaultTimeLabel}</div>
+                                <div style={{ fontSize: 12, color: isDragTarget ? 'var(--accent-primary)' : 'var(--success, #22c55e)', marginTop: 2 }}>
                                   {isDragTarget ? 'Drop here to reschedule' : '🟢 Open Slot (Drop here)'}
                                 </div>
                               </div>
@@ -621,12 +730,12 @@ export default function ScheduleCalendar() {
                                 borderRadius: 8,
                                 padding: '10px',
                                 textAlign: 'center',
-                                fontSize: 11,
+                                fontSize: 12,
                                 color: 'var(--text-muted)',
                                 opacity: 0.6,
                               }}>
                                 <span>{defaultTimeLabel}</span>
-                                <div style={{ fontSize: 10, color: 'var(--text-subtle)', marginTop: 2 }}>Past Slot</div>
+                                <div style={{ fontSize: 12, color: 'var(--text-subtle)', marginTop: 2 }}>Past Slot</div>
                               </div>
                             )}
                           </td>
@@ -637,7 +746,7 @@ export default function ScheduleCalendar() {
                     {/* Off-Slot / Custom-Time Row if any post was scheduled outside standard slots */}
                     {hasOffSlots && (
                       <tr style={{ backgroundColor: 'rgba(245, 158, 11, 0.04)', borderBottom: '1px solid var(--border-subtle)' }}>
-                        <td style={{ padding: '8px 16px', fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>
+                        <td style={{ padding: '8px 16px', fontSize: 12, color: '#f59e0b', fontWeight: 600 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                             <AlertTriangle size={13} />
                             <span>Off-Schedule</span>
@@ -665,7 +774,7 @@ export default function ScheduleCalendar() {
                                           backgroundColor: isItemPosted ? 'rgba(34, 197, 94, 0.06)' : '#78350f22',
                                           border: `1px solid ${isItemPosted ? 'rgba(34, 197, 94, 0.35)' : '#f59e0b55'}`,
                                           borderRadius: 6,
-                                          fontSize: 11.5,
+                                          fontSize: 12.5,
                                           cursor: isItemPosted ? 'default' : 'grab',
                                         }}
                                       >
@@ -734,7 +843,7 @@ export default function ScheduleCalendar() {
                                           )}
 
                                           {!isItemPosted && (
-                                            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                                               Drag to Slot A/B
                                             </span>
                                           )}
@@ -744,7 +853,7 @@ export default function ScheduleCalendar() {
                                   })}
                                 </div>
                               ) : (
-                                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</span>
+                                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>
                               )}
                             </td>
                           )
