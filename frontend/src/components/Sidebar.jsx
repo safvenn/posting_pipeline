@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
   Upload,
@@ -12,7 +12,10 @@ import {
   Clock,
   Radio,
   X,
+  LogOut,
+  User,
 } from 'lucide-react'
+import { useAuth } from '../context/AuthContext'
 
 const NAV_MAIN = [
   { to: '/',         icon: LayoutDashboard, label: 'Dashboard' },
@@ -28,6 +31,14 @@ const NAV_AUTOMATION = [
 
 export default function Sidebar({ isOpen, onClose }) {
   const [time, setTime] = useState('')
+  const { logout, tokens } = useAuth()
+  const navigate = useNavigate()
+
+  function handleLogout() {
+    logout()
+    navigate('/login', { replace: true })
+    if (onClose) onClose()
+  }
 
   useEffect(() => {
     function updateClock() {
@@ -134,6 +145,49 @@ export default function Sidebar({ isOpen, onClose }) {
 
         {/* Status & Clock Footer */}
         <div className="sidebar-footer">
+          {/* Logged-in user + Logout */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: 10,
+            padding: '7px 10px',
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 8,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <User size={12} color="var(--text-muted)" />
+              <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 600 }}>
+                {tokens?.sub || 'adminn'}
+              </span>
+            </div>
+            <button
+              id="sidebar-logout-btn"
+              onClick={handleLogout}
+              title="Sign out"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--text-muted)',
+                padding: '2px 4px',
+                borderRadius: 4,
+                fontSize: 11,
+                fontFamily: 'inherit',
+                transition: 'color 150ms',
+              }}
+              onMouseEnter={e => e.currentTarget.style.color = 'var(--error)'}
+              onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+            >
+              <LogOut size={12} />
+              <span>Sign out</span>
+            </button>
+          </div>
+
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{

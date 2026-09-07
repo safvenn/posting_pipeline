@@ -18,6 +18,7 @@ from backend.database import Base, engine
 from backend.routers import channels, posts, schedule
 from backend.routers.asmr import router as asmr_router, food_router as asmr_food_router
 from backend.routers.extension import router as extension_router
+from backend.routers.auth import router as auth_router
 from backend.jobs.job_queue import run_serial_queue
 from backend.jobs.asmr_workflow_job import run_asmr_workflow_job
 from backend.jobs.instagram_job import run_instagram_publish_job
@@ -145,22 +146,51 @@ def create_app() -> FastAPI:
     )
 
     # ---- Bearer-token auth dependency ----
+    # Accepts EITHER the static API_KEY or a valid JWT access token
     _bearer = HTTPBearer(auto_error=False)
 
     def require_api_key(
         credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
     ) -> None:
-        """Reject requests that don't carry the configured API key."""
-        expected = settings.api_key
-        if not expected:
-            # No key configured → auth disabled (dev mode, local-only)
-            return
-        if not credentials or credentials.credentials != expected:
+        """Reject requests that don't carry the configured API key OR a valid JWT."""
+        token = credentials.credentials if credentials else None
+        if not token:
+            expected = settings.api_key
+            if not expected:
+                return  # auth disabled (dev mode)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or missing API key",
+                detail="Not authenticated",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+        # First: try static API key
+        if settings.api_key and token == settings.api_key:
+            return
+
+        # Second: try JWT access token
+        try:
+            from jose import jwt as _jwt, JWTError
+            secret = settings.jwt_secret
+            if secret:
+                payload = _jwt.decode(token, secret, algorithms=[settings.jwt_algorithm])
+                if payload.get("type") == "access" and payload.get("sub"):
+                    return
+        except Exception:
+            pass
+
+        # If API_KEY is not set and JWT also failed, reject
+        expected = settings.api_key
+        if not expected:
+            return  # auth fully disabled
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key / token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Public auth endpoints (login/refresh/logout — no API key required)
+    app.include_router(auth_router)
 
     # Public OAuth callback router (no auth required)
     app.include_router(channels.public_router)
