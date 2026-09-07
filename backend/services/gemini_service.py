@@ -112,6 +112,14 @@ class GeminiService:
             except google_exceptions.InvalidArgument as exc:
                 raise GeminiAPIError(str(exc), status_code=400) from exc
 
+            except google_exceptions.NotFound as exc:
+                # Model name is wrong — fail immediately, don't retry
+                raise GeminiAPIError(
+                    f"Gemini model '{self._model_name}' not found (404). "
+                    f"Check GEMINI_MODEL in .env — valid: models/gemini-2.5-flash, models/gemini-2.5-pro. Error: {exc}",
+                    status_code=404,
+                ) from exc
+
             except Exception as exc:
                 raise GeminiAPIError(str(exc)) from exc
 
