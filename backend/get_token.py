@@ -1,5 +1,10 @@
 import os
 import sys
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
+
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 SCOPES = [
@@ -8,8 +13,16 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
 
-CLIENT_ID = os.getenv("YT_CLIENT_ID") or input("Enter Google OAuth Client ID: ").strip()
-CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET") or input("Enter Google OAuth Client Secret: ").strip()
+CLIENT_ID = (
+    os.getenv("GOOGLE_CLIENT_ID")
+    or os.getenv("YT_CLIENT_ID")
+    or input("Enter Google OAuth Client ID: ").strip()
+)
+CLIENT_SECRET = (
+    os.getenv("GOOGLE_CLIENT_SECRET")
+    or os.getenv("YT_CLIENT_SECRET")
+    or input("Enter Google OAuth Client Secret: ").strip()
+)
 
 if not CLIENT_ID or not CLIENT_SECRET:
     print("Error: Client ID and Client Secret are required.")

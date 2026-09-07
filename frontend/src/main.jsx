@@ -6,7 +6,6 @@ import { createSyncStoragePersister } from '@tanstack/query-sync-storage-persist
 import './index.css'
 import App from './App.jsx'
 import { queryClient } from './lib/queryClient.js'
-import { AuthProvider } from './context/AuthContext.jsx'
 
 // localStorage persister — safe data only (no credentials, no OAuth tokens)
 // Falls back silently if localStorage is unavailable or quota exceeded
@@ -46,15 +45,11 @@ const Root = persister ? (
       },
     }}
   >
-    <AuthProvider>
-      <App />
-    </AuthProvider>
+    <App />
   </PersistQueryClientProvider>
 ) : (
   <QueryClientProvider client={queryClient}>
-    <AuthProvider>
-      <App />
-    </AuthProvider>
+    <App />
   </QueryClientProvider>
 )
 
