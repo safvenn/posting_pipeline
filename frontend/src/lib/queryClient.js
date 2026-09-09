@@ -26,9 +26,10 @@ export const queryClient = new QueryClient({
       // Retry once on failure (Render cold starts)
       retry: 1,
       retryDelay: 2000,
-      // Don't refetch just because window regained focus while data is fresh
-      refetchOnWindowFocus: true,
-      // Don't refetch on reconnect if still fresh
+      // Don't refetch on window focus — per-query refetchInterval handles live data
+      // (runningJob polls every 4s; fresh data doesn't need tab-switch refetch)
+      refetchOnWindowFocus: false,
+      // Do refetch on reconnect (e.g. Render cold-start recovery)
       refetchOnReconnect: true,
     },
     mutations: {

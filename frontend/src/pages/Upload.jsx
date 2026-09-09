@@ -14,6 +14,7 @@ import {
   ArrowRight,
 } from 'lucide-react'
 import client, { formatErrorMessage } from '../api/client'
+import { useChannelsQuery } from '../hooks/useChannels'
 
 export default function Upload() {
   const navigate = useNavigate()
@@ -43,7 +44,10 @@ export default function Upload() {
   const [videoDuration, setVideoDuration] = useState(null)
   const [videoReady, setVideoReady] = useState(false)
 
-  const [channelsList, setChannelsList] = useState([])
+  // Shared channels cache — reuses data already fetched by Dashboard/ChannelStats
+  // No duplicate network request when navigating from another page
+  const { data: channelsData = [] } = useChannelsQuery()
+  const channelsList = channelsData.map(c => ({ id: c.channel, name: c.display_name || c.channel }))
 
   // Load from query params if opened from extension / Google Flow
   useEffect(() => {
@@ -71,19 +75,13 @@ export default function Upload() {
     }
   }, [queryVideoUrl, queryTitle])
 
+  // Auto-select first channel when the shared channels query resolves
+  // (replaces the old behavior in the removed raw fetch callback)
   useEffect(() => {
-    client.get('/channels')
-      .then(res => {
-        if (Array.isArray(res.data) && res.data.length > 0) {
-          const list = res.data.map(c => ({ id: c.channel, name: c.display_name || c.channel }))
-          setChannelsList(list)
-          if (!channel || !list.some(c => c.id === channel)) {
-            setChannel(list[0].id)
-          }
-        }
-      })
-      .catch(() => {})
-  }, [])
+    if (channelsList.length > 0 && (!channel || !channelsList.some(c => c.id === channel))) {
+      setChannel(channelsList[0].id)
+    }
+  }, [channelsList.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (channel) {
@@ -481,7 +479,7 @@ export default function Upload() {
             </div>
 
             {sheetPreview?.scheduled && (
-              <div style={{ padding: '8px 12px', borderRadius: 6, backgroundColor: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.3)', color: '#f59e0b', fontSize: 11.5, marginBottom: 12 }}>
+              <div style={{ padding: '8px 12px', borderRadius: 6, backgroundColor: 'var(--warning-subtle)', border: '1px solid var(--border-medium)', color: 'var(--warning)', fontSize: 11.5, marginBottom: 12 }}>
                 ℹ️ <strong>Note:</strong> Row #{sheetPreview.id} was already scheduled ({sheetPreview.scheduled}). Uploading this video will automatically create a <strong>new row with a fresh ID</strong> in your Google Sheet with these details.
               </div>
             )}
@@ -538,7 +536,7 @@ export default function Upload() {
           </div>
 
           {sheetWarning && (
-            <div className="card" style={{ marginTop: 16, padding: '10px 14px', backgroundColor: 'rgba(245, 185, 66, 0.08)', border: '1px solid rgba(245, 185, 66, 0.25)', color: 'var(--warning)', fontSize: 12 }}>
+            <div className="card" style={{ marginTop: 16, padding: '10px 14px', backgroundColor: 'var(--warning-subtle)', border: '1px solid var(--border-medium)', color: 'var(--warning)', fontSize: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
                 <AlertCircle size={14} /> Google Sheets Notice
               </div>

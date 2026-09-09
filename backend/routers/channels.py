@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
+import time as _time
 import urllib.parse
 import uuid
 from typing import List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,51 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
 
+# ---------------------------------------------------------------------------
+# Server-side channel stats cache
+# ---------------------------------------------------------------------------
+# Caches the ChannelStats response dict per channel key for _STATS_TTL seconds.
+# Avoids repeated YouTube API calls (expensive) on every GET /channels request.
+# Thread-safe for single-process Render deployment (GIL-protected dict ops).
+# Does NOT cache credentials, refresh tokens, or access tokens.
+_STATS_TTL: float = 180.0  # 3 minutes
+_stats_cache: dict[str, tuple[float, ChannelStats]] = {}  # key -> (timestamp, stats)
+
+
+def _stats_cache_get(key: str) -> ChannelStats | None:
+    entry = _stats_cache.get(key)
+    if entry and (_time.monotonic() - entry[0]) < _STATS_TTL:
+        return entry[1]
+    return None
+
+
+def _stats_cache_set(key: str, stats: ChannelStats) -> None:
+    _stats_cache[key] = (_time.monotonic(), stats)
+
+
+def _stats_cache_invalidate(key: str | None = None) -> None:
+    """Invalidate one channel or all channels from the stats cache."""
+    if key:
+        _stats_cache.pop(key, None)
+    else:
+        _stats_cache.clear()
+
+
+def _invalidate_all_channel_caches(channel_key: str | None = None) -> None:
+    """Invalidate stats cache, credentials cache, and name map cache."""
+    _stats_cache_invalidate(channel_key)
+    try:
+        from backend.services.youtube_auth import invalidate_channel_credentials_cache
+        invalidate_channel_credentials_cache(channel_key)
+    except Exception:
+        pass
+    try:
+        from backend.routers.posts import invalidate_channel_name_map_cache
+        invalidate_channel_name_map_cache()
+    except Exception:
+        pass
+
+
 
 def get_all_channel_keys(db: Session | None = None) -> list[tuple[str, str, bool]]:
     """Return list of (channel_key, display_name, is_custom) for all active channels from DB."""
@@ -42,11 +88,19 @@ def get_all_channel_keys(db: Session | None = None) -> list[tuple[str, str, bool
 
 
 @router.get("", response_model=List[ChannelStats])
-def get_channels(db: Session = Depends(get_db)):
+def get_channels(response: Response, db: Session = Depends(get_db)):
     results = []
     all_keys = get_all_channel_keys(db)
     for key, name, is_custom in all_keys:
-        results.append(_fetch_channel_stats(key, default_name=name, is_custom=is_custom, db=db))
+        cached = _stats_cache_get(key)
+        if cached is not None:
+            results.append(cached)
+        else:
+            stats = _fetch_channel_stats(key, default_name=name, is_custom=is_custom, db=db)
+            _stats_cache_set(key, stats)
+            results.append(stats)
+    # Allow browser/CDN to cache for 60s; private so it doesn't cache user data at a shared edge
+    response.headers["Cache-Control"] = "private, max-age=60, stale-while-revalidate=120"
     return results
 
 
@@ -188,6 +242,7 @@ def oauth_callback(code: str, state: str, request: Request, db: Session = Depend
         cfg.display_name = channel_title or cfg.display_name
         cfg.is_active = True
         db.commit()
+        _invalidate_all_channel_caches(key)
     else:
         new_ch = ChannelConfig(
             key=key,
@@ -199,6 +254,7 @@ def oauth_callback(code: str, state: str, request: Request, db: Session = Depend
         )
         db.add(new_ch)
         db.commit()
+        _invalidate_all_channel_caches(key)
 
     return HTMLResponse(
         "<html><body style='font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:#e2e8f0;'>"
@@ -254,7 +310,10 @@ def create_channel(body: ChannelCreate, db: Session = Depends(get_db)):
         db.add(new_ch)
         db.commit()
 
-    return _fetch_channel_stats(key, default_name=body.display_name, is_custom=True, db=db)
+    _invalidate_all_channel_caches(key)
+    stats = _fetch_channel_stats(key, default_name=body.display_name, is_custom=True, db=db)
+    _stats_cache_set(key, stats)
+    return stats
 
 
 @router.put("/{channel}", response_model=ChannelStats)
@@ -286,7 +345,10 @@ def update_channel(channel: str, body: ChannelUpdate, db: Session = Depends(get_
 
     db.commit()
     db.refresh(cfg)
-    return _fetch_channel_stats(channel, default_name=cfg.display_name, is_custom=True, db=db)
+    _invalidate_all_channel_caches(channel)
+    stats = _fetch_channel_stats(channel, default_name=cfg.display_name, is_custom=True, db=db)
+    _stats_cache_set(channel, stats)
+    return stats
 
 
 @router.post("/instagram/test")
@@ -323,6 +385,7 @@ def delete_channel(channel: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"Channel {channel} not found")
     db.delete(cfg)
     db.commit()
+    _invalidate_all_channel_caches(channel)
 
 
 @router.get("/google-sheets")
@@ -351,12 +414,19 @@ def list_google_sheets(sheet_id: Optional[str] = None):
 
 
 @router.get("/{channel}", response_model=ChannelStats)
-def get_channel(channel: str, db: Session = Depends(get_db)):
+def get_channel(channel: str, response: Response, db: Session = Depends(get_db)):
     all_keys = dict((k, (n, c)) for k, n, c in get_all_channel_keys(db))
     if channel not in all_keys:
         raise HTTPException(status_code=404, detail=f"Unknown channel: {channel}")
     name, is_custom = all_keys[channel]
-    return _fetch_channel_stats(channel, default_name=name, is_custom=is_custom, db=db)
+    cached = _stats_cache_get(channel)
+    if cached is not None:
+        stats = cached
+    else:
+        stats = _fetch_channel_stats(channel, default_name=name, is_custom=is_custom, db=db)
+        _stats_cache_set(channel, stats)
+    response.headers["Cache-Control"] = "private, max-age=60, stale-while-revalidate=120"
+    return stats
 
 
 def _fetch_channel_stats(channel: str, default_name: str = "", is_custom: bool = True, db: Session | None = None) -> ChannelStats:

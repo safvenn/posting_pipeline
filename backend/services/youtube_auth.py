@@ -9,6 +9,8 @@ from googleapiclient.discovery import build
 
 from backend.config import settings
 
+import time as _time
+
 logger = logging.getLogger(__name__)
 
 SCOPES = [
@@ -19,43 +21,67 @@ SCOPES = [
 
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 
+# ---------------------------------------------------------------------------
+# In-process credential config cache (2 min TTL)
+# Caches (client_id, client_secret, refresh_token) tuple per channel key.
+# Does NOT cache the OAuth access token or Google Credentials object.
+# ---------------------------------------------------------------------------
+_CREDENTIALS_TTL: float = 120.0  # 2 minutes
+_credentials_cache: dict[str, tuple[float, tuple[str, str, str]]] = {}
+
+
+def invalidate_channel_credentials_cache(channel: str | None = None) -> None:
+    """Invalidate cached credentials for a specific channel or all channels."""
+    if channel:
+        _credentials_cache.pop(channel, None)
+    else:
+        _credentials_cache.clear()
+
 
 def get_youtube_client(channel: str):
     """
     Build and return an authenticated YouTube API client for the given channel.
     Uses system-wide Google OAuth client ID/secret, with channel refresh token from DB.
     """
-    default_client_id, default_client_secret = settings.get_google_oauth_credentials()
-    client_id = default_client_id
-    client_secret = default_client_secret
-    refresh_token = ""
+    now = _time.monotonic()
+    cached = _credentials_cache.get(channel)
+    if cached and (now - cached[0]) < _CREDENTIALS_TTL:
+        client_id, client_secret, refresh_token = cached[1]
+    else:
+        default_client_id, default_client_secret = settings.get_google_oauth_credentials()
+        client_id = default_client_id
+        client_secret = default_client_secret
+        refresh_token = ""
 
-    # Check DB ChannelConfig first
-    try:
-        from backend.database import SessionLocal
-        from backend.models import ChannelConfig
-        with SessionLocal() as db:
-            cfg = db.query(ChannelConfig).filter(ChannelConfig.key == channel, ChannelConfig.is_active == True).first()
-            if cfg:
-                if cfg.client_id:
-                    client_id = cfg.client_id
-                if cfg.client_secret:
-                    client_secret = cfg.client_secret
-                if cfg.refresh_token:
-                    refresh_token = cfg.refresh_token
-    except Exception as exc:
-        logger.debug("ChannelConfig DB lookup skipped: %s", exc)
+        # Check DB ChannelConfig first
+        try:
+            from backend.database import SessionLocal
+            from backend.models import ChannelConfig
+            with SessionLocal() as db:
+                cfg = db.query(ChannelConfig).filter(ChannelConfig.key == channel, ChannelConfig.is_active == True).first()
+                if cfg:
+                    if cfg.client_id:
+                        client_id = cfg.client_id
+                    if cfg.client_secret:
+                        client_secret = cfg.client_secret
+                    if cfg.refresh_token:
+                        refresh_token = cfg.refresh_token
+        except Exception as exc:
+            logger.debug("ChannelConfig DB lookup skipped: %s", exc)
 
-    # Fallback to legacy .env settings if not found in DB
-    if not refresh_token:
-        if channel == "channel_a":
-            client_id = client_id or settings.yt_client_id_channel_a
-            client_secret = client_secret or settings.yt_client_secret_channel_a
-            refresh_token = settings.yt_refresh_token_channel_a
-        elif channel == "channel_b":
-            client_id = client_id or settings.yt_client_id_channel_b
-            client_secret = client_secret or settings.yt_client_secret_channel_b
-            refresh_token = settings.yt_refresh_token_channel_b
+        # Fallback to legacy .env settings if not found in DB
+        if not refresh_token:
+            if channel == "channel_a":
+                client_id = client_id or settings.yt_client_id_channel_a
+                client_secret = client_secret or settings.yt_client_secret_channel_a
+                refresh_token = settings.yt_refresh_token_channel_a
+            elif channel == "channel_b":
+                client_id = client_id or settings.yt_client_id_channel_b
+                client_secret = client_secret or settings.yt_client_secret_channel_b
+                refresh_token = settings.yt_refresh_token_channel_b
+
+        if client_id and client_secret and refresh_token:
+            _credentials_cache[channel] = (now, (client_id, client_secret, refresh_token))
 
     if not (client_id and client_secret and refresh_token):
         raise ValueError(

@@ -17,6 +17,8 @@ export default defineConfig({
     },
   },
   build: {
+    // Target modern browsers — avoids legacy polyfills
+    target: 'esnext',
     chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
@@ -35,10 +37,11 @@ export default defineConfig({
           if (id.includes('lucide-react')) {
             return 'vendor-lucide'
           }
-          if (
-            id.includes('/node_modules/axios/') ||
-            id.includes('/node_modules/recharts/')
-          ) {
+          // recharts in its own chunk (~350KB) — better long-term cache isolation
+          if (id.includes('/node_modules/recharts/')) {
+            return 'vendor-recharts'
+          }
+          if (id.includes('/node_modules/axios/')) {
             return 'vendor-misc'
           }
         },

@@ -326,9 +326,9 @@ export default function ChannelStats() {
     })
     setShowEditModal(true)
     fetchSheets()
-    if (ch.sheet_id) {
-      fetchTabs(ch.sheet_id)
-    }
+    // Note: fetchTabs is NOT called here directly.
+    // The useEffect on [form.sheet_id, showEditModal] below handles it,
+    // preventing a double-fetch when modal opens with an existing sheet_id.
   }
 
   function fetchSheets() {

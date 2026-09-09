@@ -44,10 +44,11 @@ function StatusBadgeComponent({ status, post, showTiming = false }) {
         <span style={{
           fontFamily: 'monospace',
           fontSize: 10,
-          background: 'rgba(34, 197, 94, 0.15)',
+          background: 'var(--success-subtle)',
           padding: '1px 5px',
           borderRadius: 4,
-          color: '#86efac',
+          color: 'var(--success)',
+          border: '1px solid var(--border-subtle)',
           marginLeft: 2,
         }}>
           {timing.durationStr}

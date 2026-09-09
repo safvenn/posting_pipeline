@@ -53,7 +53,7 @@ export default function Sidebar({ isOpen, onClose }) {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(5, 7, 10, 0.7)',
+            background: 'rgba(20, 41, 64, 0.55)',
             backdropFilter: 'blur(3px)',
             zIndex: 35,
           }}
@@ -68,11 +68,11 @@ export default function Sidebar({ isOpen, onClose }) {
               width: 32,
               height: 32,
               borderRadius: 8,
-              background: 'linear-gradient(135deg, #7C5CFF 0%, #4D5461 100%)',
+              background: 'linear-gradient(135deg, var(--color-primary, #3368A0) 0%, var(--color-secondary, #66A3BF) 100%)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              boxShadow: '0 2px 8px rgba(124, 92, 255, 0.35)',
+              boxShadow: '0 2px 8px rgba(51, 104, 160, 0.35)',
             }}>
               <Zap size={17} color="#FFFFFF" />
             </div>

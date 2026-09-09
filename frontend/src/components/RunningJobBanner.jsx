@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronRight, Tv2, Sparkles, Layers } from 'lucide-react'
 import LiveStopwatch from './LiveStopwatch'
@@ -6,19 +6,14 @@ import { parseUTCDate } from '../utils/timeFormat'
 
 export default function RunningJobBanner({ runningPost, queuedCount = 0 }) {
   const navigate = useNavigate()
-  const [now, setNow] = useState(() => Date.now())
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [])
 
   if (!runningPost || runningPost.status !== 'cleaning') return null
 
   const channelName = runningPost.channel_display_name || runningPost.channel?.replace(/_/g, ' ')
   const parsedStart = parseUTCDate(runningPost.updated_at || runningPost.created_at)
-  const startMs = parsedStart ? parsedStart.getTime() : now
-  const elapsedSec = Math.max(0, Math.floor((now - startMs) / 1000))
+  const nowMs = Date.now()
+  const startMs = parsedStart ? parsedStart.getTime() : nowMs
+  const elapsedSec = Math.max(0, Math.floor((nowMs - startMs) / 1000))
   const benchmarkSec = 390
   const totalEstSec = Math.max(benchmarkSec, elapsedSec + 30)
   const remainingSec = Math.max(5, totalEstSec - elapsedSec)
@@ -67,7 +62,7 @@ export default function RunningJobBanner({ runningPost, queuedCount = 0 }) {
             borderRadius: 999,
             fontSize: 11,
             fontWeight: 700,
-            color: '#C4B5FD',
+            color: 'var(--accent-primary)',
             letterSpacing: '0.04em',
             textTransform: 'uppercase',
           }}>

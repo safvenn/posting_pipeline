@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import time as _time
 import uuid
 from pathlib import Path
 from typing import List, Optional
@@ -264,7 +265,26 @@ async def create_post(
     return _to_post_read(post, name_map)
 
 
+# ---------------------------------------------------------------------------
+# Channel name map cache (5 min TTL)
+# In-process cache avoiding repeated db.query(ChannelConfig) on post endpoints.
+# ---------------------------------------------------------------------------
+_CHANNEL_MAP_TTL: float = 300.0  # 5 minutes
+_channel_map_cache: tuple[float, dict[str, str]] | None = None
+
+
+def invalidate_channel_name_map_cache() -> None:
+    """Invalidate the channel name mapping cache."""
+    global _channel_map_cache
+    _channel_map_cache = None
+
+
 def _get_channel_name_map(db: Session) -> dict[str, str]:
+    global _channel_map_cache
+    now = _time.monotonic()
+    if _channel_map_cache and (now - _channel_map_cache[0]) < _CHANNEL_MAP_TTL:
+        return _channel_map_cache[1]
+
     mapping = {
         "channel_a": "Channel A",
         "channel_b": "Channel B",
@@ -276,6 +296,7 @@ def _get_channel_name_map(db: Session) -> dict[str, str]:
             mapping[cfg.key] = cfg.display_name
     except Exception:
         pass
+    _channel_map_cache = (now, mapping)
     return mapping
 
 

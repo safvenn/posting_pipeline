@@ -198,10 +198,10 @@ export default function ScheduleCalendar() {
             borderRadius: 10,
             fontSize: 13,
             fontWeight: 500,
-            backgroundColor: notification.type === 'success' ? 'var(--bg-elevated, #18181b)' : 'var(--error-subtle, #450a0a)',
-            color: notification.type === 'success' ? '#22c55e' : '#ef4444',
-            border: `1px solid ${notification.type === 'success' ? '#22c55e44' : '#ef444466'}`,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            backgroundColor: notification.type === 'success' ? 'var(--bg-card)' : 'var(--error-subtle)',
+            color: notification.type === 'success' ? 'var(--success)' : 'var(--error)',
+            border: `1px solid ${notification.type === 'success' ? 'var(--border-medium)' : 'var(--border-medium)'}`,
+            boxShadow: 'var(--shadow-lg)',
             animation: 'fadeIn 0.2s ease-in-out',
           }}
         >
@@ -261,11 +261,11 @@ export default function ScheduleCalendar() {
               <span style={{ color: 'var(--text-muted)' }}>Available Viral Slot (Drop here)</span>
             </div>
             <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
-              <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--accent-border, #6366f144)', display: 'inline-block' }} />
+              <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-medium)', display: 'inline-block' }} />
               <span style={{ color: 'var(--text-muted)' }}>Scheduled (Drag to change time)</span>
             </div>
             <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
-              <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: 'rgba(34, 197, 94, 0.12)', border: '1px solid rgba(34, 197, 94, 0.35)', display: 'inline-block' }} />
+              <span style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: 'var(--success-subtle)', border: '1px solid var(--border-medium)', display: 'inline-block' }} />
               <span style={{ color: 'var(--text-muted)' }}>Posted / Live on YouTube</span>
             </div>
           </div>
@@ -399,8 +399,8 @@ export default function ScheduleCalendar() {
                             style={{
                               padding: '10px 12px',
                               borderLeft: idx === 0 ? '1px solid var(--border-subtle)' : 'none',
-                              backgroundColor: isDragTarget ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
-                              outline: isDragTarget ? '2px dashed var(--accent-primary, #6366f1)' : 'none',
+                              backgroundColor: isDragTarget ? 'var(--accent-subtle)' : 'transparent',
+                              outline: isDragTarget ? '2px dashed var(--accent-primary)' : 'none',
                               outlineOffset: -3,
                               borderRadius: 8,
                               transition: 'all 0.15s ease',
@@ -412,13 +412,13 @@ export default function ScheduleCalendar() {
                                 onDragStart={e => !isPosted && handleDragStart(e, s)}
                                 onDragEnd={handleDragEnd}
                                 style={{
-                                  backgroundColor: isFailed ? 'var(--error-subtle)' : isPosted ? 'rgba(34, 197, 94, 0.06)' : 'var(--bg-elevated)',
-                                  border: `1px solid ${isFailed ? 'var(--error-border)' : isPosted ? 'rgba(34, 197, 94, 0.35)' : 'var(--accent-border, #6366f144)'}`,
+                                  backgroundColor: isFailed ? 'var(--error-subtle)' : isPosted ? 'var(--success-subtle)' : 'var(--bg-card)',
+                                  border: `1px solid ${isFailed ? 'var(--error-border)' : isPosted ? 'var(--border-medium)' : 'var(--border-medium)'}`,
                                   borderRadius: 8,
                                   padding: '10px 12px',
                                   cursor: isPosted ? 'default' : 'grab',
                                   position: 'relative',
-                                  boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                                  boxShadow: 'var(--shadow-sm)',
                                   transition: 'transform 0.15s, box-shadow 0.15s',
                                 }}
                                 className={isPosted ? '' : 'scheduled-card-hover'}
@@ -434,7 +434,7 @@ export default function ScheduleCalendar() {
                                 )}
 
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10.5, color: isPosted ? 'var(--success, #22c55e)' : 'var(--accent-primary)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10.5, color: isPosted ? 'var(--success)' : 'var(--accent-primary)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
                                     <Clock size={11} />
                                     <span>{fmtTime(s.scheduled_at)}</span>
                                   </div>
@@ -445,14 +445,14 @@ export default function ScheduleCalendar() {
                                         style={{
                                           fontSize: 10,
                                           fontWeight: 700,
-                                          color: 'var(--success, #22c55e)',
+                                          color: 'var(--success)',
                                           display: 'inline-flex',
                                           alignItems: 'center',
                                           gap: 3,
-                                          backgroundColor: 'rgba(34, 197, 94, 0.12)',
+                                          backgroundColor: 'var(--success-subtle)',
                                           padding: '2px 6px',
                                           borderRadius: 4,
-                                          border: '1px solid rgba(34, 197, 94, 0.3)',
+                                          border: '1px solid var(--border-medium)',
                                         }}
                                         title="Video is published and fixed in place"
                                       >
@@ -598,8 +598,8 @@ export default function ScheduleCalendar() {
                             ) : isAvail ? (
                               <div
                                 style={{
-                                  backgroundColor: isDragTarget ? 'rgba(99, 102, 241, 0.25)' : 'var(--bg-subtle)',
-                                  border: `2px dashed ${isDragTarget ? 'var(--accent-primary, #6366f1)' : 'var(--border-subtle)'}`,
+                                  backgroundColor: isDragTarget ? 'var(--accent-subtle)' : 'var(--bg-subtle)',
+                                  border: `2px dashed ${isDragTarget ? 'var(--accent-primary)' : 'var(--border-medium)'}`,
                                   borderRadius: 8,
                                   padding: '14px 10px',
                                   textAlign: 'center',
@@ -610,7 +610,7 @@ export default function ScheduleCalendar() {
                                 }}
                               >
                                 <div style={{ fontWeight: 600, fontSize: 11 }}>{defaultTimeLabel}</div>
-                                <div style={{ fontSize: 10, color: isDragTarget ? 'var(--accent-primary)' : 'var(--success, #22c55e)', marginTop: 2 }}>
+                                <div style={{ fontSize: 10, color: isDragTarget ? 'var(--accent-primary)' : 'var(--success)', marginTop: 2 }}>
                                   {isDragTarget ? 'Drop here to reschedule' : '🟢 Open Slot (Drop here)'}
                                 </div>
                               </div>
@@ -636,8 +636,8 @@ export default function ScheduleCalendar() {
 
                     {/* Off-Slot / Custom-Time Row if any post was scheduled outside standard slots */}
                     {hasOffSlots && (
-                      <tr style={{ backgroundColor: 'rgba(245, 158, 11, 0.04)', borderBottom: '1px solid var(--border-subtle)' }}>
-                        <td style={{ padding: '8px 16px', fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>
+                      <tr style={{ backgroundColor: 'var(--warning-subtle)', borderBottom: '1px solid var(--border-subtle)' }}>
+                        <td style={{ padding: '8px 16px', fontSize: 11, color: 'var(--warning)', fontWeight: 600 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                             <AlertTriangle size={13} />
                             <span>Off-Schedule</span>
@@ -662,8 +662,8 @@ export default function ScheduleCalendar() {
                                           alignItems: 'center',
                                           justifyContent: 'space-between',
                                           padding: '6px 10px',
-                                          backgroundColor: isItemPosted ? 'rgba(34, 197, 94, 0.06)' : '#78350f22',
-                                          border: `1px solid ${isItemPosted ? 'rgba(34, 197, 94, 0.35)' : '#f59e0b55'}`,
+                                          backgroundColor: isItemPosted ? 'var(--success-subtle)' : 'var(--warning-subtle)',
+                                          border: `1px solid ${isItemPosted ? 'var(--border-medium)' : 'var(--border-medium)'}`,
                                           borderRadius: 6,
                                           fontSize: 11.5,
                                           cursor: isItemPosted ? 'default' : 'grab',
@@ -671,13 +671,13 @@ export default function ScheduleCalendar() {
                                       >
                                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                                           {isItemPosted ? (
-                                            <span style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--success, #22c55e)', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                                            <span style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--success)', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                                               <CheckCircle2 size={10} /> Posted
                                             </span>
                                           ) : (
-                                            <GripVertical size={12} color="#f59e0b" />
+                                            <GripVertical size={12} color="var(--warning)" />
                                           )}
-                                          <span style={{ fontWeight: 600, color: isItemPosted ? 'var(--success, #22c55e)' : '#f59e0b', fontFamily: 'var(--font-mono)' }}>
+                                          <span style={{ fontWeight: 600, color: isItemPosted ? 'var(--success)' : 'var(--warning)', fontFamily: 'var(--font-mono)' }}>
                                             {fmtTime(item.scheduled_at)}
                                           </span>
                                           <span className="truncate-text" style={{ color: 'var(--text-primary)', maxWidth: 220 }}>
@@ -714,7 +714,7 @@ export default function ScheduleCalendar() {
                                               onClick={e => e.stopPropagation()}
                                               style={{ height: 20, width: 20, padding: 0 }}
                                             >
-                                              <ExternalLink size={12} color="#f59e0b" />
+                                              <ExternalLink size={12} color="var(--warning)" />
                                             </a>
                                           )}
 
@@ -723,13 +723,13 @@ export default function ScheduleCalendar() {
                                               type="button"
                                               className="btn btn-ghost btn-xs btn-icon"
                                               title="Delete from YouTube Studio & Pipeline"
-                                              style={{ height: 20, width: 20, padding: 0, color: 'var(--error, #ef4444)' }}
+                                              style={{ height: 20, width: 20, padding: 0, color: 'var(--error)' }}
                                               onClick={e => {
                                                 e.stopPropagation()
                                                 handleDeleteScheduled(item)
                                               }}
                                             >
-                                              <Trash2 size={12} color="var(--error, #ef4444)" />
+                                              <Trash2 size={12} color="var(--error)" />
                                             </button>
                                           )}
 

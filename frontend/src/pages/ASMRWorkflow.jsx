@@ -29,7 +29,7 @@ import { queryKeys } from '../lib/queryClient'
 import { parseUTCDate } from '../utils/timeFormat'
 
 const statusMap = {
-  pending: { label: 'Pending', bg: 'rgba(111, 120, 133, 0.15)', color: 'var(--text-secondary)' },
+  pending: { label: 'Pending', bg: 'var(--bg-elevated)', color: 'var(--text-secondary)' },
   selecting_food: { label: 'Selecting Food', bg: 'var(--info-subtle)', color: 'var(--info)' },
   generating_content: { label: 'Generating Content', bg: 'var(--accent-subtle)', color: 'var(--accent-primary)' },
   validating_content: { label: 'Validating Content', bg: 'var(--accent-subtle)', color: 'var(--accent-primary)' },
@@ -37,10 +37,10 @@ const statusMap = {
   video_ready: { label: 'Video Ready', bg: 'var(--info-subtle)', color: 'var(--info)' },
   publishing: { label: 'Publishing', bg: 'var(--warning-subtle)', color: 'var(--warning)' },
   published: { label: 'Published', bg: 'var(--success-subtle)', color: 'var(--success)' },
-  notified: { label: 'Notified', bg: 'var(--success-subtle)', color: '#6EE7B7' },
+  notified: { label: 'Notified', bg: 'var(--success-subtle)', color: 'var(--success)' },
   failed: { label: 'Failed', bg: 'var(--error-subtle)', color: 'var(--error)' },
   retry_pending: { label: 'Retry Pending', bg: 'var(--warning-subtle)', color: 'var(--warning)' },
-  dry_run_complete: { label: 'Dry Run Done', bg: 'rgba(77, 163, 255, 0.15)', color: 'var(--info)' },
+  dry_run_complete: { label: 'Dry Run Done', bg: 'var(--secondary-subtle)', color: 'var(--secondary-accent)' },
 }
 
 function formatDate(d) {

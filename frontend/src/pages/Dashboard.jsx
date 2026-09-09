@@ -52,7 +52,7 @@ const StatOverview = React.memo(function StatOverview({ posts }) {
   return (
     <div className="stats-grid">
       <div className="stat-card">
-        <div className="stat-icon" style={{ backgroundColor: 'rgba(124, 92, 255, 0.12)', color: 'var(--accent-primary)' }}>
+        <div className="stat-icon" style={{ backgroundColor: 'var(--accent-subtle)', color: 'var(--accent-primary)' }}>
           <Layers size={18} />
         </div>
         <div>
@@ -62,7 +62,7 @@ const StatOverview = React.memo(function StatOverview({ posts }) {
       </div>
 
       <div className="stat-card">
-        <div className="stat-icon" style={{ backgroundColor: 'rgba(77, 163, 255, 0.12)', color: 'var(--info)' }}>
+        <div className="stat-icon" style={{ backgroundColor: 'var(--secondary-subtle)', color: 'var(--secondary-accent)' }}>
           <Clock size={18} />
         </div>
         <div>
@@ -72,7 +72,7 @@ const StatOverview = React.memo(function StatOverview({ posts }) {
       </div>
 
       <div className="stat-card">
-        <div className="stat-icon" style={{ backgroundColor: 'rgba(245, 185, 66, 0.12)', color: 'var(--warning)' }}>
+        <div className="stat-icon" style={{ backgroundColor: 'var(--warning-subtle)', color: 'var(--warning)' }}>
           <PlayCircle size={18} />
         </div>
         <div>
@@ -82,7 +82,7 @@ const StatOverview = React.memo(function StatOverview({ posts }) {
       </div>
 
       <div className="stat-card">
-        <div className="stat-icon" style={{ backgroundColor: 'rgba(53, 208, 127, 0.12)', color: 'var(--success)' }}>
+        <div className="stat-icon" style={{ backgroundColor: 'var(--success-subtle)', color: 'var(--success)' }}>
           <CheckCircle2 size={18} />
         </div>
         <div>
