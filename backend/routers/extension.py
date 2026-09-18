@@ -46,7 +46,7 @@ def _verify_extension_auth(
 
 class ExtensionIngestRequest(BaseModel):
     video_url: str
-    title: str
+    title: Optional[str] = None
     channel: str
     description: Optional[str] = ""
     tags: Optional[str] = ""
@@ -56,8 +56,10 @@ class ExtensionIngestRequest(BaseModel):
 
 class ExtensionIngestResponse(BaseModel):
     post_id: int
+    id: Optional[int] = None
     status: str
     message: str
+    title: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +156,7 @@ def get_extension_sheet_row(channel: Optional[str] = "channel_a", row_id: Option
 async def upload_from_extension(
     background_tasks: BackgroundTasks,
     channel: str = Form(...),
-    title: str = Form(...),
+    title: Optional[str] = Form(None),
     description: Optional[str] = Form(""),
     tags: Optional[str] = Form(""),
     sheet_row_id: Optional[str] = Form(None),
@@ -163,17 +165,77 @@ async def upload_from_extension(
 ):
     """
     Accepts video file directly from the extension as multipart/form-data.
-    Queues immediately with NO schedule constraints after validating real video content.
+    Full parity with web app /api/posts:
+    - Auto-binds Google Sheet row or creates new row if already scheduled
+    - Extracts title/description/tags from sheet if left blank
+    - Validates real video headers
+    - Queues immediately for processing
     """
-    title = (title or "").strip()
-    if not title:
-        raise HTTPException(status_code=422, detail="title is required")
     channel = (channel or "").strip().lower()
     if not channel:
         raise HTTPException(status_code=422, detail="channel is required")
 
     # Validate video format and magic bytes
     await _validate_video_file(video)
+
+    clean_row_id = sheet_row_id.strip() if sheet_row_id and sheet_row_id.strip() else None
+
+    # If specific sheet_row_id was selected, fetch row details from Google Sheets
+    if clean_row_id:
+        try:
+            from backend.services.sheets import get_row_by_id, append_new_row
+            sheet_data = get_row_by_id(channel, clean_row_id)
+            if sheet_data:
+                sheet_title = str(sheet_data.get("title", "")).strip()
+                sheet_desc = str(sheet_data.get("description", "")).strip()
+                sheet_tags = str(sheet_data.get("tags", "")).strip()
+
+                is_already_scheduled = bool(
+                    str(sheet_data.get("scheduled", "")).strip()
+                    or str(sheet_data.get("upload id", "") or sheet_data.get("upload_id", "")).strip()
+                )
+
+                use_title = title.strip() if title and title.strip() else sheet_title
+                use_desc = description.strip() if description and description.strip() else sheet_desc
+                use_tags = tags.strip() if tags and tags.strip() else sheet_tags
+
+                if is_already_scheduled:
+                    new_row = append_new_row(
+                        channel=channel,
+                        title=use_title or f"Video {clean_row_id} (New)",
+                        description=use_desc,
+                        tags=use_tags,
+                    )
+                    clean_row_id = str(new_row.get("id"))
+                    title = use_title
+                    description = use_desc
+                    tags = use_tags
+                    logger.info("Extension upload: row %s already scheduled, appended new row %s", sheet_data.get("id"), clean_row_id)
+                else:
+                    title = use_title
+                    description = use_desc
+                    tags = use_tags
+                    clean_row_id = str(sheet_data.get("id", clean_row_id)).strip()
+        except Exception as exc:
+            logger.warning("Extension upload: failed to process sheet row %s: %s", clean_row_id, exc)
+
+    elif not title or not title.strip():
+        try:
+            from backend.services.sheets import get_first_unscheduled_row
+            sheet_data = get_first_unscheduled_row(channel)
+            if sheet_data:
+                title = str(sheet_data.get("title", "")).strip()
+                if not description or not description.strip():
+                    description = str(sheet_data.get("description", "")).strip()
+                if not tags or not tags.strip():
+                    tags = str(sheet_data.get("tags", "")).strip()
+                clean_row_id = str(sheet_data.get("id", "")).strip() or None
+        except Exception as exc:
+            logger.warning("Extension upload: auto-fetch unscheduled row failed: %s", exc)
+
+    if not title or not title.strip():
+        raw_name = Path(video.filename or "video.mp4").stem
+        title = raw_name.replace("-", " ").replace("_", " ").title() or "Google Flow AI Video"
 
     upload_dir = settings.upload_path()
     filename = f"flow_{uuid.uuid4().hex}.mp4"
@@ -195,7 +257,7 @@ async def upload_from_extension(
             video_path=str(dest),
             status="queued",
             scheduled_at=None,
-            sheet_row_id=sheet_row_id or None,
+            sheet_row_id=clean_row_id,
         )
         db.add(post)
         db.commit()
@@ -213,8 +275,10 @@ async def upload_from_extension(
 
     return ExtensionIngestResponse(
         post_id=post_id,
+        id=post_id,
         status="queued",
         message=f"Video queued as post #{post_id}. Pipeline processing will start immediately.",
+        title=title,
     )
 
 
@@ -224,10 +288,7 @@ async def ingest_from_extension(
     background_tasks: BackgroundTasks,
     _auth: None = Depends(_verify_extension_auth),
 ):
-    """Fallback URL-based ingest."""
-    title = (body.title or "").strip()
-    if not title:
-        raise HTTPException(status_code=422, detail="title is required")
+    """Fallback URL-based ingest with full sheet sync parity."""
     channel = (body.channel or "").strip().lower()
     if not channel:
         raise HTTPException(status_code=422, detail="channel is required")
@@ -245,6 +306,64 @@ async def ingest_from_extension(
             status_code=400,
             detail="Invalid video URL protocol. Must be HTTP or HTTPS.",
         )
+
+    title = (body.title or "").strip()
+    description = (body.description or "").strip()
+    tags = (body.tags or "").strip()
+    clean_row_id = body.sheet_row_id.strip() if body.sheet_row_id and body.sheet_row_id.strip() else None
+
+    if clean_row_id:
+        try:
+            from backend.services.sheets import get_row_by_id, append_new_row
+            sheet_data = get_row_by_id(channel, clean_row_id)
+            if sheet_data:
+                sheet_title = str(sheet_data.get("title", "")).strip()
+                sheet_desc = str(sheet_data.get("description", "")).strip()
+                sheet_tags = str(sheet_data.get("tags", "")).strip()
+
+                is_already_scheduled = bool(
+                    str(sheet_data.get("scheduled", "")).strip()
+                    or str(sheet_data.get("upload id", "") or sheet_data.get("upload_id", "")).strip()
+                )
+
+                use_title = title if title else sheet_title
+                use_desc = description if description else sheet_desc
+                use_tags = tags if tags else sheet_tags
+
+                if is_already_scheduled:
+                    new_row = append_new_row(
+                        channel=channel,
+                        title=use_title or f"Video {clean_row_id} (New)",
+                        description=use_desc,
+                        tags=use_tags,
+                    )
+                    clean_row_id = str(new_row.get("id"))
+                    title = use_title
+                    description = use_desc
+                    tags = use_tags
+                else:
+                    title = use_title
+                    description = use_desc
+                    tags = use_tags
+                    clean_row_id = str(sheet_data.get("id", clean_row_id)).strip()
+        except Exception as exc:
+            logger.warning("Extension ingest: failed to process sheet row %s: %s", clean_row_id, exc)
+    elif not title:
+        try:
+            from backend.services.sheets import get_first_unscheduled_row
+            sheet_data = get_first_unscheduled_row(channel)
+            if sheet_data:
+                title = str(sheet_data.get("title", "")).strip()
+                if not description:
+                    description = str(sheet_data.get("description", "")).strip()
+                if not tags:
+                    tags = str(sheet_data.get("tags", "")).strip()
+                clean_row_id = str(sheet_data.get("id", "")).strip() or None
+        except Exception as exc:
+            logger.warning("Extension ingest: auto-fetch unscheduled row failed: %s", exc)
+
+    if not title:
+        title = "Google Flow AI Video"
 
     upload_dir = settings.upload_path()
     filename = f"flow_{uuid.uuid4().hex}.mp4"
@@ -282,12 +401,12 @@ async def ingest_from_extension(
         post = Post(
             channel=channel,
             title=title,
-            description=body.description or "",
-            tags=body.tags or "",
+            description=description or "",
+            tags=tags or "",
             video_path=str(dest),
             status="queued",
             scheduled_at=None,
-            sheet_row_id=body.sheet_row_id or None,
+            sheet_row_id=clean_row_id,
         )
         db.add(post)
         db.commit()
@@ -302,6 +421,8 @@ async def ingest_from_extension(
 
     return ExtensionIngestResponse(
         post_id=post_id,
+        id=post_id,
         status="queued",
         message=f"Video queued as post #{post_id}.",
+        title=title,
     )
