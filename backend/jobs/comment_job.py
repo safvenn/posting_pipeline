@@ -117,6 +117,9 @@ def comment_one_post(post_id: int) -> None:
                     (existing_err + " | " if existing_err else "") +
                     "first comment failed after all retries"
                 )
+            # Advance to 'commented' so the serial pipeline queue doesn't re-pick
+            # this post every 30s and block the worker thread for 20s.
+            post.status = "commented"
         post.updated_at = now
         db.commit()
         logger.info("Comment job for post %s complete (success=%s)", post_id, success)

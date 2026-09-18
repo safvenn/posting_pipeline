@@ -157,3 +157,40 @@ def test_publish_reel_skipped_when_disabled():
     res = publish_reel_for_post(post, db)
     assert res.get("skipped") is True
 
+
+def test_public_video_route_accessible_without_api_key(tmp_path):
+    from fastapi.testclient import TestClient
+    from backend.main import app
+    from backend.database import get_db
+
+    # Create dummy video file
+    dummy_file = tmp_path / "test.mp4"
+    dummy_file.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00")
+
+    mock_db = MagicMock()
+    mock_post = Post(id=999, channel="channel_a", title="Test Video", video_path=str(dummy_file))
+    mock_db.get.return_value = mock_post
+
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        client = TestClient(app)
+        # GET /api/posts/999/video without Authorization header must NOT return 401
+        resp = client.get("/api/posts/999/video")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "video/mp4"
+
+        # CORS preflight from Vercel domain must succeed with 200
+        cors_resp = client.options(
+            "/api/posts",
+            headers={
+                "Origin": "https://posting-pipeline-teal.vercel.app",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Authorization,Content-Type",
+            },
+        )
+        assert cors_resp.status_code == 200
+        assert cors_resp.headers.get("access-control-allow-origin") == "https://posting-pipeline-teal.vercel.app"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+

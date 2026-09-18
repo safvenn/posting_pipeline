@@ -139,7 +139,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed,          # explicit list — never a regex wildcard
-        allow_origin_regex=r"^chrome-extension://.*",
+        allow_origin_regex=r"^(chrome-extension://.*|https://.*\.vercel\.app|https://.*\.onrender\.com)$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -197,6 +197,9 @@ def create_app() -> FastAPI:
 
     # Public extension ingest — no auth (local/self-hosted only)
     app.include_router(extension_router)
+
+    # Public video endpoints (playback / Instagram crawler download — no auth required)
+    app.include_router(posts.public_router)
 
     # Routers (all protected by api-key dependency)
     app.include_router(posts.router,    dependencies=[Depends(require_api_key)])

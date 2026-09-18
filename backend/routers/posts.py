@@ -20,6 +20,7 @@ from backend.schemas import PostCreate, PostList, PostRead, RetryResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/posts", tags=["posts"])
+public_router = APIRouter(prefix="/api/posts", tags=["posts-public"])
 
 # ---------------------------------------------------------------------------
 # Video file validation
@@ -567,6 +568,8 @@ def retry_post(post_id: int, db: Session = Depends(get_db)):
     )
 
 
+@public_router.get("/{post_id}/video")
+@public_router.get("/{post_id}/video/clean")
 @router.get("/{post_id}/video")
 @router.get("/{post_id}/video/clean")
 def get_post_video(post_id: int, db: Session = Depends(get_db)):

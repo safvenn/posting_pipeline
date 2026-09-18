@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -707,6 +708,7 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
         logger.error("Failed to publish Instagram Reel for Post %s: %s", post.id, exc)
         post.instagram_status = "failed"
         post.instagram_error = str(exc)
+        post.updated_at = datetime.now(timezone.utc)
         db.commit()
         return {
             "success": False,

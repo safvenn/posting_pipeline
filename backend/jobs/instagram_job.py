@@ -56,6 +56,9 @@ def get_next_instagram_publishable_post_id() -> int | None:
         if not ig_channels:
             return None
 
+        from sqlalchemy import and_, or_
+        retry_delay = timedelta(minutes=15)
+
         post = (
             db.query(Post.id)
             .filter(
@@ -64,7 +67,13 @@ def get_next_instagram_publishable_post_id() -> int | None:
                 Post.youtube_video_id.isnot(None),
                 Post.scheduled_at.isnot(None),
                 Post.scheduled_at + buffer <= now,
-                Post.instagram_status.in_(["none", "failed"]),
+                or_(
+                    Post.instagram_status == "none",
+                    and_(
+                        Post.instagram_status == "failed",
+                        Post.updated_at + retry_delay <= now,
+                    ),
+                ),
                 # Exclude posts that already have a published Instagram URL
                 Post.instagram_media_id.is_(None),
             )

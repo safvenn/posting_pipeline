@@ -87,7 +87,7 @@ class Settings(BaseSettings):
 
     # CORS — comma-separated list of allowed frontend origins
     # Example: http://localhost:5173,https://mypipeline.vercel.app
-    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
+    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,https://posting-pipeline-teal.vercel.app,https://posting-pipeline.vercel.app"
 
     # API key for bearer-token auth on all /api/* routes (except /api/health)
     # Generate a strong random value and set in .env: API_KEY=<random-64-char-hex>
