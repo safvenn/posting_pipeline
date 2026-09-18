@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy.orm import Session
 
@@ -152,6 +152,7 @@ def get_extension_sheet_row(channel: Optional[str] = "channel_a", row_id: Option
 
 @router.post("/upload", response_model=ExtensionIngestResponse)
 async def upload_from_extension(
+    background_tasks: BackgroundTasks,
     channel: str = Form(...),
     title: str = Form(...),
     description: Optional[str] = Form(""),
@@ -178,9 +179,12 @@ async def upload_from_extension(
     filename = f"flow_{uuid.uuid4().hex}.mp4"
     dest = upload_dir / filename
 
-    with open(dest, "wb") as f:
-        while chunk := await video.read(1024 * 256):
-            f.write(chunk)
+    try:
+        with open(dest, "wb") as f:
+            while chunk := await video.read(1024 * 256):
+                f.write(chunk)
+    finally:
+        await video.close()
 
     with SessionLocal() as db:
         post = Post(
@@ -198,18 +202,26 @@ async def upload_from_extension(
         db.refresh(post)
         post_id = post.id
 
+    # Trigger serial pipeline queue immediately
+    try:
+        from backend.jobs.job_queue import run_serial_queue
+        background_tasks.add_task(run_serial_queue)
+    except Exception as exc:
+        logger.warning("Could not trigger background task queue: %s", exc)
+
     logger.info("Extension upload: created Post id=%d (queued) for channel=%s", post_id, channel)
 
     return ExtensionIngestResponse(
         post_id=post_id,
         status="queued",
-        message=f"Video queued as post #{post_id}. Pipeline processing will start in 30 seconds.",
+        message=f"Video queued as post #{post_id}. Pipeline processing will start immediately.",
     )
 
 
 @router.post("/ingest", response_model=ExtensionIngestResponse)
 async def ingest_from_extension(
     body: ExtensionIngestRequest,
+    background_tasks: BackgroundTasks,
     _auth: None = Depends(_verify_extension_auth),
 ):
     """Fallback URL-based ingest."""
@@ -220,12 +232,26 @@ async def ingest_from_extension(
     if not channel:
         raise HTTPException(status_code=422, detail="channel is required")
 
+    url = (body.video_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=422, detail="video_url is required")
+    if url.startswith("blob:"):
+        raise HTTPException(
+            status_code=400,
+            detail="Blob URLs cannot be downloaded directly by the server. Please upload the video file directly as multipart/form-data via /api/extension/upload.",
+        )
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid video URL protocol. Must be HTTP or HTTPS.",
+        )
+
     upload_dir = settings.upload_path()
     filename = f"flow_{uuid.uuid4().hex}.mp4"
     dest = upload_dir / filename
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
-        async with client.stream("GET", body.video_url) as response:
+        async with client.stream("GET", url) as response:
             if response.status_code != 200:
                 raise HTTPException(status_code=502, detail=f"Download failed with HTTP {response.status_code}")
             with open(dest, "wb") as f:
@@ -267,6 +293,12 @@ async def ingest_from_extension(
         db.commit()
         db.refresh(post)
         post_id = post.id
+
+    try:
+        from backend.jobs.job_queue import run_serial_queue
+        background_tasks.add_task(run_serial_queue)
+    except Exception as exc:
+        logger.warning("Could not trigger background task queue: %s", exc)
 
     return ExtensionIngestResponse(
         post_id=post_id,

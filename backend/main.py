@@ -130,20 +130,38 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # ---- CORS: explicit allowlist only ----
+    # ---- CORS: Allow all frontends (Google Flow, Labs, Vercel, Extension, Localhost) ----
     raw_origins = settings.allowed_origins
     allowed = [o.strip() for o in raw_origins.split(",") if o.strip()]
-    # Also allow the render/production backend public URL's frontend sibling (optional)
     if settings.backend_public_url:
         allowed.append(settings.backend_public_url.rstrip("/"))
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allowed,          # explicit list — never a regex wildcard
-        allow_origin_regex=r"^(chrome-extension://.*|https://.*\.vercel\.app|https://.*\.onrender\.com)$",
+        allow_origins=allowed,
+        allow_origin_regex=r".*",       # Matches all origins (Flow, Labs, Vercel, Extension, Localhost) with credentials
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["*"],
     )
+
+    # Global exception handler — ensures 500 errors always return CORS headers so browser never masks them as 'Failed to fetch'
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request, exc: Exception):
+        logger.exception("Unhandled server exception: %s", exc)
+        from fastapi.responses import JSONResponse
+        origin = request.headers.get("origin") or "*"
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal server error: {str(exc)}"},
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Methods": "*",
+            },
+        )
+
 
     # ---- Bearer-token auth dependency ----
     # Accepts EITHER the static API_KEY or a valid JWT access token
