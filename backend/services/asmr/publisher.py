@@ -88,12 +88,15 @@ class InstagramPublisher(Publisher):
         return "instagram"
 
     def _get_credentials(self) -> tuple[str, str] | None:
-        from backend.database import SessionLocal
-        from backend.models import ChannelConfig
-        with SessionLocal() as db:
-            ch = db.query(ChannelConfig).filter(ChannelConfig.instagram_enabled == True).first()
-            if ch and ch.instagram_account_id and ch.instagram_access_token:
-                return ch.instagram_account_id, ch.instagram_access_token
+        try:
+            from backend.database import SessionLocal
+            from backend.models import ChannelConfig
+            with SessionLocal() as db:
+                ch = db.query(ChannelConfig).filter(ChannelConfig.instagram_enabled == True).first()
+                if ch and ch.instagram_account_id and ch.instagram_access_token:
+                    return ch.instagram_account_id, ch.instagram_access_token
+        except Exception:
+            return None
         return None
 
     def is_configured(self) -> bool:
