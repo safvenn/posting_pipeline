@@ -138,3 +138,88 @@ def test_extension_upload_optional_title(client):
     assert data["title"] is not None
     assert resp.headers.get("access-control-allow-origin") == "https://flow.google.com"
 
+
+def test_is_valid_video_signature():
+    """Verify is_valid_video_signature accepts real videos and rejects non-video files."""
+    from backend.routers.posts import is_valid_video_signature
+
+    # Valid video headers
+    mp4_ftyp = b"\x00\x00\x00\x18ftypisom"
+    mp4_offset4 = b"\x00\x00\x00\x20ftypmp42\x00\x00\x00\x00"
+    webm_header = b"\x1aE\xdf\xa3\x9f\x42\x86\x81\x01\x42\xf7\x81\x01"
+    avi_header = b"RIFF\xb8\x00\x00\x00AVI LIST\x38\x00\x00\x00"
+    ts_header = b"\x47\x40\x00\x10" + b"\x00" * 20
+
+    assert is_valid_video_signature(mp4_ftyp) is True
+    assert is_valid_video_signature(mp4_offset4) is True
+    assert is_valid_video_signature(webm_header) is True
+    assert is_valid_video_signature(avi_header) is True
+    assert is_valid_video_signature(ts_header) is True
+
+    # Non-video headers (HTML, XML, JSON, Fonts, Images)
+    html_page = b"<!DOCTYPE html>\n<html><head><title>403</title>"
+    xml_error = b'<?xml version="1.0" encoding="UTF-8"?><Error>'
+    json_resp = b'{\n  "error": "Not Found", "code": 404\n}'
+    woff2_font = b"wOF2\x00\x01\x00\x00\x00\x00\x12\x34"
+    png_image = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+
+    assert is_valid_video_signature(html_page) is False
+    assert is_valid_video_signature(xml_error) is False
+    assert is_valid_video_signature(json_resp) is False
+    assert is_valid_video_signature(woff2_font) is False
+    assert is_valid_video_signature(png_image) is False
+    assert is_valid_video_signature(b"") is False
+    assert is_valid_video_signature(b"abc") is False
+
+
+def test_extension_ingest_rejects_non_video_url(client: TestClient, monkeypatch):
+    """Extension ingest rejects non-video URLs with clear, informative HTTP 400 error."""
+    from backend.config import settings
+    import httpx
+
+    # Mock httpx response returning HTML error page
+    class MockStreamResponse:
+        status_code = 200
+        url = "https://storage.googleapis.com/assets/config.json"
+        headers = {"content-type": "application/json"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+        async def aiter_bytes(self, chunk_size=1024):
+            yield b'{\n  "status": "error", "message": "not a video"\n}'
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+        def stream(self, method, url, **kwargs):
+            return MockStreamResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
+
+    headers = {}
+    if settings.api_key:
+        headers["Authorization"] = f"Bearer {settings.api_key}"
+
+    resp = client.post(
+        "/api/extension/ingest",
+        json={
+            "video_url": "https://storage.googleapis.com/assets/config.json",
+            "channel": "the_indian_kitchen",
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 400
+    assert "not a video" in resp.json()["detail"].lower() or "application/json" in resp.json()["detail"]
+
+

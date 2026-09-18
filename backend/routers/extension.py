@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from backend.config import settings
 from backend.database import SessionLocal, get_db
 from backend.models import ChannelConfig, Post
-from backend.routers.posts import _validate_video_file, _VIDEO_MAGIC, _MAGIC_READ_BYTES
+from backend.routers.posts import _validate_video_file, is_valid_video_signature
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +373,21 @@ async def ingest_from_extension(
         async with client.stream("GET", url) as response:
             if response.status_code != 200:
                 raise HTTPException(status_code=502, detail=f"Download failed with HTTP {response.status_code}")
+
+            # Check if redirected to login page or returned non-video content
+            final_url = str(response.url)
+            content_type = response.headers.get("content-type", "").lower()
+            if "accounts.google.com" in final_url or "login" in final_url:
+                raise HTTPException(
+                    status_code=400,
+                    detail="This video URL requires Google authentication and cannot be downloaded directly by the server. Please play the video in Flow and upload using the extension uploader.",
+                )
+            if "text/html" in content_type or "application/json" in content_type:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"The URL returned {content_type} instead of a video. Please ensure the video is playing in Flow, or click 'Choose / Upload Video File'.",
+                )
+
             with open(dest, "wb") as f:
                 async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
                     f.write(chunk)
@@ -380,16 +395,13 @@ async def ingest_from_extension(
     # Validate downloaded file magic bytes
     try:
         with open(dest, "rb") as f:
-            header = f.read(_MAGIC_READ_BYTES)
-        matched = any(
-            header[offset: offset + len(sig)] == sig
-            for offset, sig in _VIDEO_MAGIC
-        )
-        if not matched:
+            header = f.read(64)
+        if not is_valid_video_signature(header):
             dest.unlink(missing_ok=True)
+            logger.warning("Downloaded content failed video signature check. First 32 bytes: %r", header[:32])
             raise HTTPException(
                 status_code=400,
-                detail="Downloaded URL content does not match a valid video format signature.",
+                detail="Downloaded URL content does not match a valid video format signature (MP4/WebM/MOV). The URL may be an expired link or non-video asset. Please play the video or choose the video file directly.",
             )
     except HTTPException:
         raise

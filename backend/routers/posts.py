@@ -49,7 +49,36 @@ _VIDEO_MAGIC: list[tuple[int, bytes]] = [
     (0,  b"\x30\x26\xb2\x75"),       # WMV / ASF
 ]
 
-_MAGIC_READ_BYTES = 16  # how many bytes to read for signature check
+_MAGIC_READ_BYTES = 64  # how many bytes to read for signature check
+
+
+def is_valid_video_signature(header: bytes) -> bool:
+    """Check if header bytes match a known video format (MP4, MOV, WebM, MKV, AVI, etc.)."""
+    if not header or len(header) < 4:
+        return False
+    # Standard exact offset signatures
+    if any(
+        header[offset: offset + len(sig)] == sig
+        for offset, sig in _VIDEO_MAGIC
+        if len(header) >= offset + len(sig)
+    ):
+        return True
+    # MP4 / MOV: any ftyp box within the first 64 bytes
+    if b"ftyp" in header[:64]:
+        return True
+    # Matroska / WebM EBML
+    if header.startswith(b"\x1aE\xdf\xa3"):
+        return True
+    # AVI
+    if header.startswith(b"RIFF") and b"AVI " in header[:16]:
+        return True
+    # MPEG-TS sync byte
+    if header.startswith(b"\x47"):
+        return True
+    # QuickTime / ISO atom moov or mdat
+    if b"moov" in header[:64] or b"mdat" in header[:64]:
+        return True
+    return False
 
 
 async def _validate_video_file(video: UploadFile) -> None:
@@ -62,15 +91,11 @@ async def _validate_video_file(video: UploadFile) -> None:
             detail=f"Unsupported file type '{ct}'. Please upload a video file (MP4, MOV, MKV, AVI, WebM).",
         )
 
-    # 2. Magic bytes check — read first 16 bytes
+    # 2. Magic bytes check — read first 64 bytes
     header = await video.read(_MAGIC_READ_BYTES)
     await video.seek(0)  # rewind so the file can be saved normally
 
-    matched = any(
-        header[offset: offset + len(sig)] == sig
-        for offset, sig in _VIDEO_MAGIC
-    )
-    if not matched:
+    if not is_valid_video_signature(header):
         raise HTTPException(
             status_code=400,
             detail="File signature does not match a supported video format. Ensure you are uploading a real video file.",
