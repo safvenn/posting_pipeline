@@ -35,6 +35,8 @@ class Post(Base):
     instagram_post_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     instagram_status: Mapped[str] = mapped_column(String(32), nullable=False, default="none")
     instagram_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Pre-created container ID (created while video file is hot on disk, published later at scheduled_at)
+    instagram_container_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     # Google Sheets Row Matching
     sheet_row_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

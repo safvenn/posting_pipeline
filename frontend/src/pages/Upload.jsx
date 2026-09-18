@@ -43,6 +43,7 @@ export default function Upload() {
   const [sheetWarning, setSheetWarning] = useState('')
   const [videoDuration, setVideoDuration] = useState(null)
   const [videoReady, setVideoReady] = useState(false)
+  const [showAllRows, setShowAllRows] = useState(false)
 
   // Shared channels cache — reuses data already fetched by Dashboard/ChannelStats
   // No duplicate network request when navigating from another page
@@ -85,7 +86,7 @@ export default function Upload() {
 
   useEffect(() => {
     if (channel) {
-      loadSheetRows()
+      loadSheetRows(showAllRows)
       fetchSheetPreview(sheetRowId)
     }
   }, [channel])
@@ -105,15 +106,18 @@ export default function Upload() {
     }
   }, [file])
 
-  async function loadSheetRows() {
+  async function loadSheetRows(allRows = false) {
     setSheetWarning('')
     try {
-      const res = await client.get(`/posts/sheet-rows?channel=${channel}`)
+      const unscheduledParam = allRows ? 'false' : 'true'
+      const res = await client.get(`/posts/sheet-rows?channel=${channel}&unscheduled_only=${unscheduledParam}`)
       if (res.data?.found && Array.isArray(res.data.rows) && res.data.rows.length > 0) {
         setSheetRows(res.data.rows)
       } else {
         setSheetRows([])
-        if (res.data?.message) {
+        if (!allRows && res.data?.found === true && res.data.rows?.length === 0) {
+          setSheetWarning('All sheet rows are already scheduled. Toggle "Show All" to see them.')
+        } else if (res.data?.message) {
           setSheetWarning(`Google Sheets connection warning: ${res.data.message}`)
         }
       }
@@ -414,16 +418,35 @@ export default function Upload() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
               <label className="form-label" style={{ margin: 0 }}>
                 Select Google Sheet Row to Bind &amp; Update
+                {!showAllRows && sheetRows.length > 0 && (
+                  <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--success)', fontWeight: 500 }}>
+                    ({sheetRows.length} unscheduled)
+                  </span>
+                )}
               </label>
-              <button
-                type="button"
-                onClick={() => { loadSheetRows(); fetchSheetPreview(sheetRowId); }}
-                className="btn btn-ghost btn-sm"
-                style={{ height: 24, fontSize: 11 }}
-              >
-                <RefreshCw size={11} className={sheetLoading ? 'spinner' : ''} />
-                <span>Refresh Sheet</span>
-              </button>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !showAllRows
+                    setShowAllRows(next)
+                    loadSheetRows(next)
+                  }}
+                  className="btn btn-ghost btn-sm"
+                  style={{ height: 24, fontSize: 11, color: showAllRows ? 'var(--accent-primary)' : 'var(--text-muted)' }}
+                >
+                  {showAllRows ? '🟢 Unscheduled Only' : '📋 Show All Rows'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { loadSheetRows(showAllRows); fetchSheetPreview(sheetRowId); }}
+                  className="btn btn-ghost btn-sm"
+                  style={{ height: 24, fontSize: 11 }}
+                >
+                  <RefreshCw size={11} className={sheetLoading ? 'spinner' : ''} />
+                  <span>Refresh</span>
+                </button>
+              </div>
             </div>
 
             {sheetRows.length > 0 ? (
@@ -436,8 +459,12 @@ export default function Upload() {
               >
                 <option value="">🟢 Auto-Pick: Next Unscheduled Row in Sheet</option>
                 {sheetRows.map(r => (
-                  <option key={r.id} value={r.id}>
-                    {r.is_scheduled ? '✓' : '•'} Row #{r.id}: {r.title ? (r.title.length > 65 ? r.title.slice(0, 65) + '...' : r.title) : '(Untitled)'} {r.is_scheduled ? `[Scheduled: ${r.scheduled}]` : '[Unscheduled]'}
+                  <option
+                    key={r.id}
+                    value={r.id}
+                    style={r.is_scheduled ? { color: 'var(--text-muted)' } : {}}
+                  >
+                    {r.is_scheduled ? '✓' : '•'} Row #{r.id}: {r.title ? (r.title.length > 60 ? r.title.slice(0, 60) + '...' : r.title) : '(Untitled)'} {r.is_scheduled ? '[Already Scheduled]' : '[Unscheduled]'}
                   </option>
                 ))}
               </select>

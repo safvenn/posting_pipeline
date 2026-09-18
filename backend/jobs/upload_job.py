@@ -31,6 +31,42 @@ from backend.services.youtube_auth import (
 
 logger = logging.getLogger(__name__)
 
+
+def _enforce_title_seo(title: str, tags_str: str) -> str:
+    """
+    Post-process title to meet YouTube SEO requirements:
+    1. Ensure primary tag from enriched_tags appears in title (if not already)
+    2. Title ends with '#shorts' if not already
+    3. Hard cap at 100 characters (YouTube limit)
+    """
+    title = (title or "").strip()
+
+    # Get primary tag (first non-empty tag)
+    tags = [t.strip() for t in tags_str.split(";") if t.strip()] if tags_str else []
+    primary_tag = tags[0] if tags else ""
+
+    # Embed primary tag if not already in title
+    if primary_tag and primary_tag.lower() not in title.lower():
+        candidate = f"{title} {primary_tag}"
+        if len(candidate) <= 95:  # leave room for #shorts
+            title = candidate
+
+    # Ensure #shorts at end
+    if "#shorts" not in title.lower():
+        shorts_suffix = " #shorts"
+        if len(title) + len(shorts_suffix) <= 100:
+            title = title + shorts_suffix
+        else:
+            # Truncate title to fit #shorts within 100 chars
+            title = title[:91].rstrip() + " #shorts"
+
+    # Final hard cap
+    if len(title) > 100:
+        title = title[:97].rstrip() + "..."
+
+    return title
+
+
 def _get_active_channels(db) -> list[str]:
     """Retrieve all active channels from database."""
     try:
@@ -177,7 +213,7 @@ def _upload_single_post(post: Post, db) -> bool:
         yt = get_youtube_client(post.channel)
     except Exception as exc:
         logger.error("YouTube auth failed for %s: %s", post.channel, exc)
-        _set_status(db, post, "failed", f"auth error: {exc}")
+        _clear_schedule_and_fail(db, post, f"auth error: {exc}")
         return False
 
     from backend.services.watermark import resolve_video_path
@@ -186,7 +222,7 @@ def _upload_single_post(post: Post, db) -> bool:
         video_p = resolve_video_path(post.video_path, is_clean=False)
 
     if not video_p or not video_p.exists():
-        _set_status(db, post, "failed", f"Video file not found on server: {post.clean_video_path or post.video_path}")
+        _clear_schedule_and_fail(db, post, f"Video file not found on server: {post.clean_video_path or post.video_path}")
         return False
     video_path = str(video_p)
 
@@ -200,7 +236,7 @@ def _upload_single_post(post: Post, db) -> bool:
         if not video_id or not video_id.strip():
             err = "YouTube upload returned empty video_id — upload may have failed silently"
             logger.error("Post %s: %s", post.id, err)
-            _set_status(db, post, "failed", err)
+            _clear_schedule_and_fail(db, post, err)
             return False
 
         post.youtube_video_id = video_id
@@ -210,10 +246,22 @@ def _upload_single_post(post: Post, db) -> bool:
         # scheduled_at + upload_id + enriched_title all written in one atomic call.
         _sheet_writeback(post.channel, post, video_id)
 
-        # Instagram Reels publishing is handled by instagram_job.py at scheduled_at time.
-        # This ensures the Reel goes live AFTER YouTube makes the video public.
+        # Pre-create Instagram container while video file is still hot on disk.
+        # This solves the ephemeral disk problem: container_id stored in DB,
+        # so instagram_job.py can publish without needing the file later.
+        try:
+            from backend.services.instagram import pre_create_instagram_container
+            threading.Thread(
+                target=pre_create_instagram_container,
+                args=(post, db),
+                name=f"ig-precontainer-{post.id}",
+                daemon=True,
+            ).start()
+        except Exception as ig_exc:
+            logger.warning("Could not spawn Instagram pre-container thread for post %s: %s", post.id, ig_exc)
+
         logger.info(
-            "Post %s uploaded to YouTube (%s) — Instagram publishing will trigger at scheduled_at=%s",
+            "Post %s uploaded to YouTube (%s) — Instagram container will be pre-created; publishing at scheduled_at=%s",
             post.id, video_id,
             post.scheduled_at.strftime("%Y-%m-%d %H:%M UTC") if post.scheduled_at else "N/A",
         )
@@ -223,11 +271,44 @@ def _upload_single_post(post: Post, db) -> bool:
         if is_quota_error(exc):
             err = quota_error_message(exc)
             logger.warning("Quota error uploading post %s: %s", post.id, err)
-            _set_status(db, post, "failed", err)
+            _clear_schedule_and_fail(db, post, err)
         else:
             logger.exception("Upload failed for post %s", post.id)
-            _set_status(db, post, "failed", f"upload error: {exc}")
+            _clear_schedule_and_fail(db, post, f"upload error: {exc}")
         return False
+
+
+def _clear_schedule_and_fail(db, post: Post, error: str) -> None:
+    """
+    Mark post as failed AND clear scheduled_at so the slot is not blocked.
+    Also clears Google Sheet entry if bound (avoids orphan scheduled rows).
+    """
+    post.scheduled_at = None
+    post.status = "failed"
+    post.error_message = error
+    post.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    logger.error("Post %s failed, schedule cleared: %s", post.id, error)
+
+    # Clear sheet row if bound — free the slot
+    if post.sheet_row_id and post.channel:
+        try:
+            from backend.services.sheets import update_row_fields
+            update_row_fields(
+                post.channel,
+                post.sheet_row_id,
+                {"scheduled": "", "upload id": ""},
+            )
+            logger.info(
+                "Cleared Google Sheet row #%s for failed post %s",
+                post.sheet_row_id, post.id,
+            )
+        except Exception as sheet_exc:
+            logger.warning(
+                "Could not clear Google Sheet row for failed post %s: %s",
+                post.id, sheet_exc,
+            )
+
 
 
 
@@ -366,9 +447,14 @@ def _do_upload(yt, post: Post, video_path: str) -> str:
             post.id,
         )
 
+    # Apply SEO title enforcement: primary tag in title, #shorts suffix, ≤ 100 chars
+    raw_title = post.enriched_title or post.title or ""
+    tags_str = post.enriched_tags or post.tags or ""
+    seo_title = _enforce_title_seo(raw_title, tags_str)
+
     body = {
         "snippet": {
-            "title": (post.enriched_title or post.title)[:100],
+            "title": seo_title,
             "description": post.enriched_description or post.description,
             "tags": tags_list[:500],
             "categoryId": "22",

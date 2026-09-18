@@ -90,27 +90,36 @@ def get_extension_channels(db: Session = Depends(get_db)):
 
 
 @router.get("/sheet-rows")
-def get_extension_sheet_rows(channel: Optional[str] = "channel_a", db: Session = Depends(get_db)):
-    """Fetch live rows from Google Sheets for the selected channel."""
+def get_extension_sheet_rows(channel: Optional[str] = "channel_a", unscheduled_only: bool = True, db: Session = Depends(get_db)):
+    """Fetch live rows from Google Sheets for the selected channel.
+    
+    By default (unscheduled_only=True), returns only unscheduled rows.
+    Pass unscheduled_only=false to get all rows.
+    """
     try:
         from backend.services.sheets import get_all_rows
         all_rows = get_all_rows(channel)
         result = []
         for r in all_rows:
             sched = str(r.get("scheduled", "")).strip()
+            upload_id = str(r.get("upload id", "") or r.get("upload_id", "")).strip()
+            is_scheduled = bool(sched or upload_id)
+            if unscheduled_only and is_scheduled:
+                continue
             result.append({
                 "id": str(r.get("id", "")).strip(),
                 "title": r.get("title", ""),
                 "description": r.get("description", ""),
                 "tags": r.get("tags", ""),
                 "scheduled": sched,
-                "is_scheduled": bool(sched),
-                "upload_id": str(r.get("upload id", "") or r.get("upload_id", "")).strip(),
+                "is_scheduled": is_scheduled,
+                "upload_id": upload_id,
             })
-        return {"found": True, "rows": result}
+        return {"found": True, "rows": result, "unscheduled_only": unscheduled_only}
     except Exception as exc:
         logger.warning("Extension could not fetch sheet rows for channel %s: %s", channel, exc)
         return {"found": False, "rows": [], "message": str(exc)}
+
 
 
 @router.get("/sheet-row")

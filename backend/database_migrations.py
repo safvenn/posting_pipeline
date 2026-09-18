@@ -31,6 +31,9 @@ def run_migrations():
                 if "sheet_row_id" not in post_cols:
                     logger.info("Adding sheet_row_id column to posts table")
                     conn.execute(text("ALTER TABLE posts ADD COLUMN sheet_row_id VARCHAR(64)"))
+                if "instagram_container_id" not in post_cols:
+                    logger.info("Adding instagram_container_id column to posts table")
+                    conn.execute(text("ALTER TABLE posts ADD COLUMN instagram_container_id VARCHAR(128)"))
 
         # 2. Check channel_configs table columns
         if inspector.has_table("channel_configs"):

@@ -443,6 +443,7 @@ def fetch_media_permalink(media_id: str, access_token: str) -> Optional[str]:
 def resolve_post_video_url(post: Post) -> Optional[str]:
     """
     Resolve public HTTPS video URL for a post if backend has a public domain (e.g. Render).
+    This URL is accessible by Instagram's crawler even after local file is gone.
     """
     from backend.config import settings
     public_base = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("BACKEND_PUBLIC_URL") or getattr(settings, "backend_public_url", "")
@@ -452,6 +453,108 @@ def resolve_post_video_url(post: Post) -> Optional[str]:
             public_base = f"https://{public_base}"
         return f"{public_base}/api/posts/{post.id}/video"
     return None
+
+
+def pre_create_instagram_container(post: Post, db: Session) -> Optional[str]:
+    """
+    Pre-create Instagram Reels container immediately after YouTube upload while
+    the video file is still on disk (before Render ephemeral disk may reset).
+
+    Stores the container ID in post.instagram_container_id.
+    At scheduled_at time, publish_reel_for_post() will skip video upload and just
+    call publish_container() with the stored container_id.
+
+    Returns container_id on success, None on failure.
+
+    IMPORTANT: Instagram containers expire after ~24 hours. If the scheduled_at
+    is more than 23 hours away, this will NOT pre-create (fallback to video_url at publish time).
+    """
+    from datetime import timezone as _tz
+    ch = db.query(ChannelConfig).filter(ChannelConfig.key == post.channel).first()
+    if not ch or not ch.instagram_enabled:
+        return None
+
+    account_id, access_token = sanitize_instagram_credentials(
+        ch.instagram_account_id or "",
+        ch.instagram_access_token or "",
+    )
+    if not account_id or not access_token:
+        logger.debug("[Instagram] Pre-create skipped: missing credentials for channel %s", post.channel)
+        return None
+
+    # Only pre-create if scheduled within 23 hours (container expires at 24h)
+    if post.scheduled_at:
+        now = datetime.now(_tz.utc)
+        scheduled = post.scheduled_at
+        if scheduled.tzinfo is None:
+            import pytz
+            scheduled = pytz.utc.localize(scheduled)
+        hours_until = (scheduled - now).total_seconds() / 3600
+        if hours_until > 23:
+            logger.info(
+                "[Instagram] Pre-create skipped for post %s: scheduled in %.1fh (>23h, container would expire)",
+                post.id, hours_until,
+            )
+            return None
+
+    # Find video file
+    from backend.services.watermark import resolve_video_path
+    video_p = resolve_video_path(post.clean_video_path, is_clean=True)
+    if not video_p or not video_p.exists():
+        video_p = resolve_video_path(post.video_path, is_clean=False)
+
+    video_path = str(video_p) if video_p and video_p.exists() else None
+
+    # Try public URL first (preferred: no binary upload needed)
+    video_url = resolve_post_video_url(post)
+
+    if not video_url and not video_path:
+        logger.debug("[Instagram] Pre-create skipped: no video file or public URL for post %s", post.id)
+        return None
+
+    caption = format_instagram_caption(
+        title=post.enriched_title or post.title or "",
+        description=post.enriched_description or post.description or "",
+        tags=post.enriched_tags or post.tags or "",
+    )
+
+    try:
+        container_data = create_reels_container(
+            account_id=account_id,
+            access_token=access_token,
+            caption=caption,
+            video_path=video_path if not video_url else None,
+            video_url=video_url,
+        )
+        container_id = container_data.get("id")
+        upload_uri = container_data.get("uri")
+
+        # Upload binary if resumable URI provided and no public URL
+        if upload_uri and not video_url and video_path and os.path.exists(video_path):
+            upload_video_resumable(
+                upload_uri=upload_uri,
+                access_token=access_token,
+                video_path=video_path,
+            )
+
+        if container_id:
+            post.instagram_container_id = container_id
+            post.instagram_status = "container_ready"
+            db.commit()
+            logger.info(
+                "[Instagram] Pre-created container %s for post %s (scheduled in %.1fh)",
+                container_id, post.id,
+                hours_until if post.scheduled_at else 0,
+            )
+            return container_id
+    except Exception as exc:
+        logger.warning(
+            "[Instagram] Container pre-creation failed for post %s (will retry at publish time): %s",
+            post.id, exc,
+        )
+
+    return None
+
 
 
 def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[str] = None) -> dict:
@@ -512,11 +615,14 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
             return {"success": False, "error": err}
 
     if not video_url and (not video_path or not os.path.exists(video_path)):
-        err = f"Video file not found for post {post.id}: {video_path}"
-        post.instagram_status = "failed"
-        post.instagram_error = err
-        db.commit()
-        return {"success": False, "error": err}
+        # Last resort: try public backend URL (file may be gone from disk, but URL still resolves)
+        video_url = resolve_post_video_url(post)
+        if not video_url:
+            err = f"Video file not found for post {post.id}: {video_path} — and no public URL available. Re-upload to fix."
+            post.instagram_status = "failed"
+            post.instagram_error = err
+            db.commit()
+            return {"success": False, "error": err}
 
     caption = format_instagram_caption(
         title=post.enriched_title or post.title or "",
@@ -529,27 +635,50 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
         post.instagram_error = None
         db.commit()
 
-        # Step 1: Create container
-        container_data = create_reels_container(
-            account_id=account_id,
-            access_token=access_token,
-            caption=caption,
-            video_path=video_path if not video_url else None,
-            video_url=video_url,
-        )
-        container_id = container_data["id"]
-        upload_uri = container_data.get("uri")
-
-        # Step 1b: Upload video binary if resumable upload uri provided
-        if upload_uri and video_path and os.path.exists(video_path):
-            upload_video_resumable(
-                upload_uri=upload_uri,
-                access_token=access_token,
-                video_path=video_path,
+        # --- Strategy A: use pre-created container_id (no video upload needed) ---
+        container_id = post.instagram_container_id
+        if container_id:
+            logger.info(
+                "[Instagram] Using pre-created container %s for post %s",
+                container_id, post.id,
             )
+            # Verify container is still valid
+            try:
+                is_ready = wait_for_container_ready(
+                    container_id=container_id,
+                    access_token=access_token,
+                    max_wait_seconds=60,
+                    poll_interval=5,
+                )
+            except Exception as container_exc:
+                logger.warning(
+                    "[Instagram] Pre-created container %s invalid for post %s: %s — falling through to re-create",
+                    container_id, post.id, container_exc,
+                )
+                container_id = None  # fall through to re-create
 
-        # Step 2: Poll container status
-        wait_for_container_ready(container_id=container_id, access_token=access_token)
+        # --- Strategy B: create container now (file or public URL) ---
+        if not container_id:
+            container_data = create_reels_container(
+                account_id=account_id,
+                access_token=access_token,
+                caption=caption,
+                video_path=video_path if not video_url else None,
+                video_url=video_url,
+            )
+            container_id = container_data["id"]
+            upload_uri = container_data.get("uri")
+
+            # Step 1b: Upload video binary if resumable upload uri provided
+            if upload_uri and video_path and os.path.exists(video_path):
+                upload_video_resumable(
+                    upload_uri=upload_uri,
+                    access_token=access_token,
+                    video_path=video_path,
+                )
+
+            # Step 2: Poll container status
+            wait_for_container_ready(container_id=container_id, access_token=access_token)
 
         # Step 3: Publish Reel
         media_id = publish_container(
