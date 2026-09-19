@@ -73,7 +73,12 @@ def _do_drive_upload(post: Post, db) -> bool:
              message=f"Uploading {dest_name} to Drive folder {folder_id}")
 
         storage = get_storage()
-        file_id = storage.upload(video_path, dest_name=dest_name, folder_id=folder_id)
+        file_id = storage.upload(
+            video_path,
+            dest_name=dest_name,
+            folder_id=folder_id,
+            channel=post.channel,
+        )
 
         post.drive_file_id = file_id
         post.drive_upload_status = "completed"

@@ -141,7 +141,12 @@ def get_global_auth_url(request: Request, channel: Optional[str] = None, db: Ses
         )
 
     redirect_uri = _get_redirect_uri(request)
-    scopes = "https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl"
+    scopes = (
+        "https://www.googleapis.com/auth/youtube "
+        "https://www.googleapis.com/auth/youtube.upload "
+        "https://www.googleapis.com/auth/youtube.force-ssl "
+        "https://www.googleapis.com/auth/drive.file"
+    )
     
     state = channel or f"new_{uuid.uuid4().hex[:6]}"
     params = {

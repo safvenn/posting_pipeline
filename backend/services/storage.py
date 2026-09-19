@@ -63,7 +63,41 @@ class GoogleDriveStorage:
     def __init__(self) -> None:
         self._service = None  # lazy-init
 
-    def _get_service(self):
+    def _get_service(self, channel: str | None = None):
+        # 1. First attempt to use user OAuth credentials (from ChannelConfig)
+        # This uses the user's personal Google Drive storage quota (Option B for personal @gmail.com)
+        try:
+            from backend.database import SessionLocal
+            from backend.models import ChannelConfig
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+
+            client_id, client_secret = settings.get_google_oauth_credentials()
+            with SessionLocal() as db:
+                query = db.query(ChannelConfig).filter(ChannelConfig.is_active == True)
+                if channel:
+                    cfg = query.filter(ChannelConfig.key == channel).first()
+                else:
+                    cfg = query.first()
+
+                if cfg and cfg.refresh_token:
+                    cid = cfg.client_id or client_id
+                    csec = cfg.client_secret or client_secret
+                    if cid and csec:
+                        creds = Credentials(
+                            token=None,
+                            refresh_token=cfg.refresh_token,
+                            token_uri="https://oauth2.googleapis.com/token",
+                            client_id=cid,
+                            client_secret=csec,
+                            scopes=_DRIVE_SCOPES,
+                        )
+                        logger.info("Using user OAuth credentials for Drive (channel=%s)", cfg.key)
+                        return build("drive", "v3", credentials=creds, cache_discovery=False)
+        except Exception as exc:
+            logger.debug("User OAuth Drive service initialization skipped: %s", exc)
+
+        # 2. Fallback to Service Account JSON
         if self._service is not None:
             return self._service
 
@@ -85,6 +119,7 @@ class GoogleDriveStorage:
         local_path: Path,
         dest_name: str,
         folder_id: str | None = None,
+        channel: str | None = None,
     ) -> str:
         """
         Upload local_path to Google Drive.
@@ -93,7 +128,7 @@ class GoogleDriveStorage:
         """
         from googleapiclient.http import MediaFileUpload
 
-        service = self._get_service()
+        service = self._get_service(channel=channel)
 
         file_metadata: dict = {"name": dest_name}
         target_folder = folder_id or settings.google_drive_indian_kitchen_folder_id
@@ -111,6 +146,7 @@ class GoogleDriveStorage:
             body=file_metadata,
             media_body=media,
             fields="id,name,size",
+            supportsAllDrives=True,
         )
 
         response = None
@@ -130,11 +166,11 @@ class GoogleDriveStorage:
         )
         return file_id
 
-    def delete(self, file_ref: str) -> None:
+    def delete(self, file_ref: str, channel: str | None = None) -> None:
         """Delete a Drive file by ID. Silently ignores 404 (already deleted)."""
         try:
-            service = self._get_service()
-            service.files().delete(fileId=file_ref).execute()
+            service = self._get_service(channel=channel)
+            service.files().delete(fileId=file_ref, supportsAllDrives=True).execute()
             logger.info("Drive delete: file_id=%s", file_ref)
         except Exception as exc:
             # Don't propagate — deletion is best-effort cleanup
@@ -207,7 +243,12 @@ def upload_post_to_drive(post_id: int) -> bool:
                  message=f"Uploading {dest_name} to Drive folder {folder_id}")
 
             storage = get_storage()
-            file_id = storage.upload(video_path, dest_name=dest_name, folder_id=folder_id)
+            file_id = storage.upload(
+                video_path,
+                dest_name=dest_name,
+                folder_id=folder_id,
+                channel=post.channel,
+            )
 
             post.drive_file_id = file_id
             post.drive_upload_status = "completed"
