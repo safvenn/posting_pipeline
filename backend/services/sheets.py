@@ -340,3 +340,81 @@ def append_new_row(channel: str, title: str, description: str = "", tags: str = 
         "upload id": "",
     }
 
+
+def bind_slot_and_update_sheet(
+    channel: str,
+    db,
+    post,
+    preferred_title: Optional[str] = None,
+):
+    """
+    Instantly check for the next upload slot and update the Google Sheet upon video upload.
+
+    1. Determines next slot using pick_next_slot(channel, db).
+    2. Binds sheet_row_id (if not already set, auto-picks next unscheduled row or appends new).
+    3. Writes the assigned slot and title to the Google Sheet immediately.
+    4. Updates post.scheduled_at and post.sheet_row_id in the database.
+    """
+    from datetime import datetime
+    from backend.services.scheduler_logic import pick_next_slot
+
+    slot = post.scheduled_at
+    slot_str = None
+    try:
+        if not slot:
+            slot = pick_next_slot(channel, db)
+            post.scheduled_at = slot
+        import pytz
+        if slot.tzinfo is None:
+            slot_tz = pytz.timezone(settings.timezone).localize(slot)
+        else:
+            slot_tz = slot.astimezone(pytz.timezone(settings.timezone))
+        slot_str = slot_tz.strftime("%Y-%m-%dT%H:%M:%S+05:30")
+    except Exception as slot_exc:
+        logger.warning("Could not calculate next slot for post %s (channel %s): %s", post.id, channel, slot_exc)
+
+    # Resolve sheet_row_id if not already set
+    clean_row_id = str(post.sheet_row_id).strip() if post.sheet_row_id else None
+    if not clean_row_id:
+        try:
+            unscheduled = get_first_unscheduled_row(channel)
+            if unscheduled and unscheduled.get("id"):
+                clean_row_id = str(unscheduled["id"]).strip()
+            else:
+                # All rows scheduled or sheet empty — append a new row
+                new_row = append_new_row(
+                    channel=channel,
+                    title=preferred_title or post.title or "Google Flow AI Video",
+                    description=post.description or "",
+                    tags=post.tags or "",
+                )
+                clean_row_id = str(new_row.get("id")).strip()
+            post.sheet_row_id = clean_row_id
+        except Exception as sheet_lookup_err:
+            logger.warning("Could not auto-bind sheet row for post %s: %s", post.id, sheet_lookup_err)
+
+    # Instantly update the Google Sheet
+    if clean_row_id and slot_str:
+        try:
+            update_fields = {"scheduled": slot_str}
+            title_to_set = preferred_title or post.title
+            if title_to_set and title_to_set.strip():
+                update_fields["title"] = title_to_set.strip()
+            update_row_fields(channel, clean_row_id, update_fields)
+            logger.info(
+                "Instantly updated Google Sheet for post %s: channel=%s row=%s slot=%s",
+                post.id, channel, clean_row_id, slot_str,
+            )
+            from backend.services.workflow_logger import wlog, SCHEDULE_ASSIGNED
+            wlog(db, post_id=post.id, event_type=SCHEDULE_ASSIGNED, status="success",
+                 sheet_row_id=clean_row_id, message=f"Instantly scheduled at {slot_str}")
+        except Exception as update_err:
+            logger.warning("Could not instantly update Sheet row %s: %s", clean_row_id, update_err)
+
+    try:
+        db.commit()
+    except Exception:
+        pass
+
+    return slot, clean_row_id
+

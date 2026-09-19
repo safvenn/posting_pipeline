@@ -238,18 +238,19 @@ async def create_post(
         except Exception as exc:
             logger.warning("Failed to process selected sheet row %s: %s", clean_row_id, exc)
 
-    # If no sheet_row_id was provided and title is empty, auto-fetch first unscheduled row
-    elif not title or not title.strip():
+    # If no sheet_row_id was provided: auto-fetch first unscheduled row or append new
+    if not clean_row_id:
         try:
             from backend.services.sheets import get_first_unscheduled_row
             sheet_data = get_first_unscheduled_row(channel)
             if sheet_data:
-                title = str(sheet_data.get("title", "")).strip()
+                clean_row_id = str(sheet_data.get("id", "")).strip() or None
+                if not title or not title.strip():
+                    title = str(sheet_data.get("title", "")).strip()
                 if not description or not description.strip():
                     description = str(sheet_data.get("description", "")).strip()
                 if not tags or not tags.strip():
                     tags = str(sheet_data.get("tags", "")).strip()
-                clean_row_id = str(sheet_data.get("id", "")).strip() or None
         except Exception as exc:
             logger.warning("Auto-fetch next unscheduled row failed: %s", exc)
 
@@ -285,9 +286,17 @@ async def create_post(
     db.add(post)
     db.commit()
     db.refresh(post)
+
+    # Instantly check next slot and update on Google Sheet
+    try:
+        from backend.services.sheets import bind_slot_and_update_sheet
+        bind_slot_and_update_sheet(channel=channel, db=db, post=post, preferred_title=title)
+    except Exception as sched_err:
+        logger.warning("Instant slot check and sheet update failed for post %s: %s", post.id, sched_err)
+
     logger.info(
-        "Post %s created (channel=%s, title=%s, sheet_row_id=%s, file=%s)",
-        post.id, channel, title, clean_row_id, dest,
+        "Post %s created (channel=%s, title=%s, sheet_row_id=%s, scheduled_at=%s, file=%s)",
+        post.id, channel, title, post.sheet_row_id, post.scheduled_at, dest,
     )
 
     # Trigger Google Drive upload immediately

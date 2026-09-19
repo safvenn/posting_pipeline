@@ -115,7 +115,7 @@ def _gemini_enrich_and_schedule(channel: str, post: Post, db) -> Optional[dict]:
         from backend.services.scheduler_logic import pick_next_slot
         sub_count = _get_subscriber_count(channel)
         enriched = rule_enrich(channel, post.title, post.description, post.tags, sub_count)
-        slot = pick_next_slot(channel, db)
+        slot = post.scheduled_at or pick_next_slot(channel, db)
         return {
             "id": post.sheet_row_id,  # preserve bound sheet row id
             "title": enriched["enriched_title"],
@@ -163,7 +163,7 @@ def _schedule_single_post(post: Post, db) -> bool:
         sub_count = _get_subscriber_count(post.channel)
         enriched = rule_enrich(post.channel, post.title or "", post.description or "", post.tags or "", sub_count)
         try:
-            scheduled_at = pick_next_slot(post.channel, db)
+            scheduled_at = post.scheduled_at or pick_next_slot(post.channel, db)
         except Exception as exc:
             logger.error("Could not pick next slot for post %s (channel %s): %s", post.id, post.channel, exc)
             _set_status(db, post, "failed", f"Scheduling error: {exc}")
@@ -180,7 +180,7 @@ def _schedule_single_post(post: Post, db) -> bool:
         # Authoritative deterministic slot calculation
         from backend.services.scheduler_logic import pick_next_slot
         try:
-            scheduled_at = pick_next_slot(post.channel, db)
+            scheduled_at = post.scheduled_at or pick_next_slot(post.channel, db)
         except Exception as exc:
             logger.error("Could not pick next slot for post %s (channel %s): %s", post.id, post.channel, exc)
             _set_status(db, post, "failed", f"Scheduling error: {exc}")

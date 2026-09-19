@@ -136,6 +136,8 @@ class ExtensionIngestResponse(BaseModel):
     status: str
     message: str
     title: Optional[str] = None
+    scheduled_at: Optional[str] = None
+    sheet_row_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +149,10 @@ def get_extension_channels(db: Session = Depends(get_db)):
     """Return real connected channels list for the extension."""
     channels = []
     try:
-        custom = db.query(ChannelConfig).filter(ChannelConfig.is_active == True).all()
+        custom = db.query(ChannelConfig).filter(
+            ChannelConfig.is_active == True,
+            ChannelConfig.key != "google_drive",
+        ).all()
         for c in custom:
             channels.append({
                 "id": c.key,
@@ -295,17 +300,18 @@ async def upload_from_extension(
         except Exception as exc:
             logger.warning("Extension upload: failed to process sheet row %s: %s", clean_row_id, exc)
 
-    elif not title or not title.strip():
+    if not clean_row_id:
         try:
             from backend.services.sheets import get_first_unscheduled_row
             sheet_data = get_first_unscheduled_row(channel)
             if sheet_data:
-                title = str(sheet_data.get("title", "")).strip()
+                clean_row_id = str(sheet_data.get("id", "")).strip() or None
+                if not title or not title.strip():
+                    title = str(sheet_data.get("title", "")).strip()
                 if not description or not description.strip():
                     description = str(sheet_data.get("description", "")).strip()
                 if not tags or not tags.strip():
                     tags = str(sheet_data.get("tags", "")).strip()
-                clean_row_id = str(sheet_data.get("id", "")).strip() or None
         except Exception as exc:
             logger.warning("Extension upload: auto-fetch unscheduled row failed: %s", exc)
 
@@ -340,6 +346,16 @@ async def upload_from_extension(
         db.refresh(post)
         post_id = post.id
 
+        # Instantly check next slot and update on Google Sheet
+        try:
+            from backend.services.sheets import bind_slot_and_update_sheet
+            bind_slot_and_update_sheet(channel=channel, db=db, post=post, preferred_title=title)
+        except Exception as sched_err:
+            logger.warning("Instant slot check and sheet update failed for extension upload post %s: %s", post.id, sched_err)
+
+        scheduled_at_str = post.scheduled_at.isoformat() if post.scheduled_at else None
+        clean_row_id = post.sheet_row_id
+
     # Trigger Google Drive upload immediately
     try:
         from backend.services.storage import upload_post_to_drive
@@ -360,8 +376,10 @@ async def upload_from_extension(
         post_id=post_id,
         id=post_id,
         status="queued",
-        message=f"Video queued as post #{post_id}. Pipeline processing will start immediately.",
+        message=f"Video queued as post #{post_id}. Next slot assigned & Google Sheet updated.",
         title=title,
+        scheduled_at=scheduled_at_str,
+        sheet_row_id=clean_row_id,
     )
 
 
@@ -428,17 +446,18 @@ async def ingest_from_extension(
                     clean_row_id = str(sheet_data.get("id", clean_row_id)).strip()
         except Exception as exc:
             logger.warning("Extension ingest: failed to process sheet row %s: %s", clean_row_id, exc)
-    elif not title:
+    if not clean_row_id:
         try:
             from backend.services.sheets import get_first_unscheduled_row
             sheet_data = get_first_unscheduled_row(channel)
             if sheet_data:
-                title = str(sheet_data.get("title", "")).strip()
+                clean_row_id = str(sheet_data.get("id", "")).strip() or None
+                if not title:
+                    title = str(sheet_data.get("title", "")).strip()
                 if not description:
                     description = str(sheet_data.get("description", "")).strip()
                 if not tags:
                     tags = str(sheet_data.get("tags", "")).strip()
-                clean_row_id = str(sheet_data.get("id", "")).strip() or None
         except Exception as exc:
             logger.warning("Extension ingest: auto-fetch unscheduled row failed: %s", exc)
 
@@ -540,6 +559,16 @@ async def ingest_from_extension(
         db.refresh(post)
         post_id = post.id
 
+        # Instantly check next slot and update on Google Sheet
+        try:
+            from backend.services.sheets import bind_slot_and_update_sheet
+            bind_slot_and_update_sheet(channel=channel, db=db, post=post, preferred_title=title)
+        except Exception as sched_err:
+            logger.warning("Instant slot check and sheet update failed for extension ingest post %s: %s", post.id, sched_err)
+
+        scheduled_at_str = post.scheduled_at.isoformat() if post.scheduled_at else None
+        clean_row_id = post.sheet_row_id
+
     # Trigger Google Drive upload immediately
     try:
         from backend.services.storage import upload_post_to_drive
@@ -557,6 +586,8 @@ async def ingest_from_extension(
         post_id=post_id,
         id=post_id,
         status="queued",
-        message=f"Video queued as post #{post_id}.",
+        message=f"Video queued as post #{post_id}. Next slot assigned & Google Sheet updated.",
         title=title,
+        scheduled_at=scheduled_at_str,
+        sheet_row_id=clean_row_id,
     )
