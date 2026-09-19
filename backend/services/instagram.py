@@ -368,10 +368,13 @@ def wait_for_container_ready(
     base_url = get_graph_base(access_token)
     url = f"{base_url}/{container_id}"
     params = {
-        "fields": "status_code,status",
+        "fields": "status_code,status,error_message",
         "access_token": access_token,
     }
     headers = {"Authorization": f"Bearer {access_token}"}
+
+    # Initial delay to give Meta's background crawler time to fetch and begin processing
+    time.sleep(min(8, poll_interval))
 
     start_time = time.time()
     with httpx.Client(timeout=15.0) as client:
@@ -384,7 +387,7 @@ def wait_for_container_ready(
                 logger.info("Instagram container %s processing finished.", container_id)
                 return True
             elif status_code in ("ERROR", "EXPIRED"):
-                err_msg = data.get("status", f"Container failed with status: {status_code}")
+                err_msg = data.get("error_message") or data.get("status") or f"Container failed with status: {status_code}"
                 raise RuntimeError(f"Instagram media processing error: {err_msg}")
 
             logger.debug("Instagram container %s status: %s. Waiting %ds...", container_id, status_code, poll_interval)
@@ -526,8 +529,8 @@ def pre_create_instagram_container(post: Post, db: Session) -> Optional[str]:
     # Try public URL first (preferred: no binary upload needed)
     video_url = resolve_post_video_url(post)
 
-    if not video_url and not video_path:
-        logger.debug("[Instagram] Pre-create skipped: no video file or public URL for post %s", post.id)
+    if not video_path:
+        logger.debug("[Instagram] Pre-create skipped: no video file for post %s", post.id)
         return None
 
     caption = format_instagram_caption(
@@ -641,9 +644,17 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
         except Exception as exc:
             logger.warning("[Instagram] Failed to restore raw video from Drive: %s", exc)
 
-    video_path = str(video_p) if video_p and video_p.exists() else (post.clean_video_path or post.video_path)
+    video_path = str(video_p) if video_p and video_p.exists() else None
 
-    if video_path and os.path.exists(video_path):
+    # Fail fast if video file is missing on disk AND Drive
+    if not video_path:
+        err = f"Video file for post #{post.id} is no longer available on disk or Google Drive. Please re-upload the video."
+        post.instagram_status = "failed"
+        post.instagram_error = err
+        db.commit()
+        return {"success": False, "error": err}
+
+    if os.path.exists(video_path):
         try:
             from backend.services.video_quality import enhance_to_1080p_hd
             enhanced_path = enhance_to_1080p_hd(video_path)
@@ -657,23 +668,11 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
 
     # If using Instagram User Token (IGAA...), video_url is required
     if access_token.startswith("IG") and not video_url:
-        # Check if local video path is missing
-        if not video_path or not os.path.exists(video_path):
-            err = f"Video file not found for post {post.id} and no public URL is available."
-            post.instagram_status = "failed"
-            post.instagram_error = err
-            db.commit()
-            return {"success": False, "error": err}
-
-    if not video_url and (not video_path or not os.path.exists(video_path)):
-        # Last resort: try public backend URL (file may be gone from disk, but URL still resolves)
-        video_url = resolve_post_video_url(post)
-        if not video_url:
-            err = f"Video file not found for post {post.id}: {video_path} — and no public URL available. Re-upload to fix."
-            post.instagram_status = "failed"
-            post.instagram_error = err
-            db.commit()
-            return {"success": False, "error": err}
+        err = f"Video file not found for post {post.id} and no public URL is available."
+        post.instagram_status = "failed"
+        post.instagram_error = err
+        db.commit()
+        return {"success": False, "error": err}
 
     caption = format_instagram_caption(
         title=post.enriched_title or post.title or "",

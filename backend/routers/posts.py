@@ -609,10 +609,10 @@ def retry_post(post_id: int, db: Session = Depends(get_db)):
     )
 
 
-@public_router.get("/{post_id}/video")
-@public_router.get("/{post_id}/video/clean")
-@router.get("/{post_id}/video")
-@router.get("/{post_id}/video/clean")
+@public_router.api_route("/{post_id}/video", methods=["GET", "HEAD"])
+@public_router.api_route("/{post_id}/video/clean", methods=["GET", "HEAD"])
+@router.api_route("/{post_id}/video", methods=["GET", "HEAD"])
+@router.api_route("/{post_id}/video/clean", methods=["GET", "HEAD"])
 def get_post_video(post_id: int, db: Session = Depends(get_db)):
     """Serve video file for playback, download, or Instagram Graph API crawler fetching."""
     post = db.get(Post, post_id)
@@ -661,6 +661,7 @@ def get_post_video(post_id: int, db: Session = Depends(get_db)):
         path=str(video_p),
         media_type="video/mp4",
         filename=f"video-{post.id}.mp4",
+        content_disposition_type="inline",
     )
 
 
