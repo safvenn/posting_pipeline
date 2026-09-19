@@ -41,7 +41,46 @@ import io
 def _ssh_client() -> paramiko.SSHClient:
     """Open an authenticated SSH connection to the worker."""
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    # --- Host key verification ---
+    # Production: load pinned key from WORKER_SSH_KNOWN_HOST_KEY env var.
+    # Format: "<type> <base64key>" e.g. "ssh-rsa AAAA..."
+    # Dev fallback: set WORKER_SSH_TRUST_HOST=true (logs a loud warning).
+    pinned_key = getattr(settings, "worker_ssh_known_host_key", "").strip()
+    trust_host = getattr(settings, "worker_ssh_trust_host", False)
+
+    if pinned_key:
+        import base64
+        host = settings.worker_ssh_host
+        parts = pinned_key.split(None, 2)
+        if len(parts) >= 2:
+            key_type, key_data_b64 = parts[0], parts[1]
+            key_bytes = base64.b64decode(key_data_b64)
+            known = paramiko.HostKeys()
+            if key_type == "ssh-rsa":
+                pkey_obj = paramiko.RSAKey(data=key_bytes)
+            elif key_type == "ssh-ed25519":
+                pkey_obj = paramiko.Ed25519Key(data=key_bytes)
+            elif key_type in ("ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"):
+                pkey_obj = paramiko.ECDSAKey(data=key_bytes)
+            else:
+                pkey_obj = paramiko.PKey(data=key_bytes)
+            known.add(host, key_type, pkey_obj)
+            client.get_host_keys().update(known)
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        else:
+            logger.warning("SSH: WORKER_SSH_KNOWN_HOST_KEY malformed — falling back to AutoAdd (insecure)")
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    elif trust_host:
+        logger.warning(
+            "SSH: WORKER_SSH_TRUST_HOST=true — skipping host key verification. "
+            "Do NOT use this in production. Set WORKER_SSH_KNOWN_HOST_KEY instead."
+        )
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    else:
+        # Neither pinned key nor trust flag set — use system known_hosts if available
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
     connect_kwargs = {
         "hostname": settings.worker_ssh_host,

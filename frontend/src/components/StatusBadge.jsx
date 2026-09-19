@@ -3,13 +3,16 @@ import LiveStopwatch from './LiveStopwatch'
 import { getJobTiming } from '../utils/timeFormat'
 
 const STATUS_CONFIG = {
-  queued:    { label: 'Queued',    dot: '○' },
-  cleaning:  { label: 'Cleaning',  dot: '◌' },
-  cleaned:   { label: 'Cleaned',   dot: '●' },
-  scheduled: { label: 'Scheduled', dot: '◉' },
-  uploaded:  { label: 'Scheduled', dot: '◉' },
-  commented: { label: 'Commented', dot: '✓' },
-  failed:    { label: 'Failed',    dot: '✕' },
+  queued:          { label: 'Queued',         dot: '○' },
+  cleaning:        { label: 'Cleaning',        dot: '◌' },
+  cleaned:         { label: 'Cleaned',         dot: '●' },
+  scheduled:       { label: 'Scheduled',       dot: '◉' },
+  uploaded:        { label: 'Scheduled',       dot: '◉' },
+  commented:       { label: 'Commented',       dot: '✓' },
+  failed:          { label: 'Failed',          dot: '✕' },
+  drive_uploading: { label: 'Drive Upload',    dot: '⬆' },
+  retrying:        { label: 'Retrying',        dot: '↻' },
+  retry_exhausted: { label: 'Failed (Exhausted)', dot: '✕' },
 }
 
 function StatusBadgeComponent({ status, post, showTiming = false }) {

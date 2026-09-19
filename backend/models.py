@@ -47,6 +47,19 @@ class Post(Base):
     enriched_tags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     first_comment_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Google Drive archive
+    drive_file_id: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    drive_upload_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="none", index=True
+    )  # none | pending | completed | failed
+
+    # Retry state — persisted so restarts can resume
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -61,6 +74,36 @@ class Post(Base):
 
     def __repr__(self) -> str:
         return f"<Post id={self.id} channel={self.channel} status={self.status}>"
+
+
+# ---------------------------------------------------------------------------
+# Workflow audit trail
+# ---------------------------------------------------------------------------
+
+class WorkflowEvent(Base):
+    """Immutable append-only audit log for every pipeline step on a Post."""
+    __tablename__ = "workflow_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    post_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("posts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # Values: success | failure | info | retry
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="info")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # JSON-serialised extra context (drive_file_id, youtube_video_id, sheet_row_id, etc.)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    def __repr__(self) -> str:
+        return f"<WorkflowEvent id={self.id} post={self.post_id} type={self.event_type} status={self.status}>"
 
 
 # --------------------------------------------------------------------------- #

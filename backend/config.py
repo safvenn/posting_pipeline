@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     worker_ssh_key_path: str = "~/.ssh/id_rsa"
     worker_ssh_key_content: str = ""
     worker_ssh_password: str = ""
+    worker_ssh_known_host_key: str = ""   # e.g. "ssh-ed25519 AAAA..."
+    worker_ssh_trust_host: bool = False    # Dev only — skips host key check
     gwr_worker_dir: str = "/home/ubuntu/video-worker"
     gwr_tmp_dir: str = "/home/ubuntu/video-worker/tmp"
     gwr_video_bitrate_mbps: int = 30
@@ -106,6 +108,15 @@ class Settings(BaseSettings):
     asmr_schedule_cron: str = "0 9 * * *"
     asmr_food_sheet_id: str = "1XmQIPm4VtvAciiMo43T-BjyQsPCiI82AU-_tFyjGKVo"
     asmr_food_sheet_tab: str = "Sheet1"
+
+    # Google Drive — video archive storage
+    # Obtain the folder ID from the Drive URL: drive.google.com/drive/folders/<ID>
+    # Service account must have Editor access on this folder.
+    google_drive_indian_kitchen_folder_id: str = ""
+
+    # Upload / download size limits (MB)
+    max_upload_size_mb: int = 500
+    max_download_size_mb: int = 500
 
     def upload_path(self) -> Path:
         if Path("/var/data").exists() and Path("/var/data").is_dir():

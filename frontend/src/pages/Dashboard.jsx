@@ -27,6 +27,7 @@ const STATUSES = [
   { id: 'scheduled', label: 'Scheduled' },
   { id: 'commented', label: 'Commented' },
   { id: 'failed', label: 'Failed' },
+  { id: 'retrying', label: 'Retrying' },
 ]
 
 function fmtTime(isoStr) {
@@ -42,12 +43,13 @@ function fmtTime(isoStr) {
   })
 }
 
-const StatOverview = React.memo(function StatOverview({ posts }) {
+const StatOverview = React.memo(function StatOverview({ posts, activePosts, completedPosts, retryingPosts, exhaustedPosts }) {
   const total = posts.length
-  const inPipeline = posts.filter(p => ['queued', 'cleaning', 'cleaned'].includes(p.status)).length
-  const scheduled = posts.filter(p => ['scheduled', 'uploaded'].includes(p.status)).length
-  const completed = posts.filter(p => p.status === 'commented').length
-  const failed = posts.filter(p => p.status === 'failed').length
+  const inPipeline = activePosts.filter(p => ['queued', 'cleaning', 'cleaned'].includes(p.status)).length
+  const scheduled = activePosts.filter(p => ['scheduled', 'uploaded'].includes(p.status)).length
+  const completed = completedPosts.length
+  const retrying = retryingPosts.length
+  const failed = exhaustedPosts.length
 
   return (
     <div className="stats-grid">
@@ -137,8 +139,39 @@ export default function Dashboard() {
   const posts = postData?.items || []
   const total = postData?.total || 0
 
-  const queuedCount = useMemo(() => posts.filter(p => p.status === 'queued').length, [posts])
-  const stuckCount = useMemo(() => posts.filter(p => ['cleaning', 'cleaned'].includes(p.status)).length, [posts])
+  // --- Queue split: active vs completed vs failed ---
+  // Active: still working through the pipeline (no confirmed youtube_video_id yet)
+  const activePosts = useMemo(() => posts.filter(p =>
+    !['commented'].includes(p.status) &&
+    !(p.youtube_video_id && ['scheduled', 'uploaded'].includes(p.status)) &&
+    p.status !== 'failed'
+  ), [posts])
+
+  // Completed: has a confirmed youtube_video_id OR is commented
+  const completedPosts = useMemo(() => posts.filter(p =>
+    p.status === 'commented' ||
+    (p.youtube_video_id && ['scheduled', 'uploaded'].includes(p.status))
+  ), [posts])
+
+  // Retrying: failed but retry_count < max_retries and next_retry_at in future
+  const retryingPosts = useMemo(() => posts.filter(p =>
+    p.status === 'failed' &&
+    p.next_retry_at &&
+    p.retry_count < (p.max_retries || 5)
+  ), [posts])
+
+  // Exhausted: failed + retry_count >= max_retries
+  const exhaustedPosts = useMemo(() => posts.filter(p =>
+    p.status === 'failed' &&
+    p.retry_count >= (p.max_retries || 5)
+  ), [posts])
+
+  // For display when status filter is 'all' — show all three sections
+  const displayPosts = status === 'all' ? activePosts : posts
+
+
+  const queuedCount = useMemo(() => activePosts.filter(p => p.status === 'queued').length, [activePosts])
+  const stuckCount = useMemo(() => activePosts.filter(p => ['cleaning', 'cleaned'].includes(p.status)).length, [activePosts])
 
   async function handleResetStuck() {
     try {
@@ -211,7 +244,13 @@ export default function Dashboard() {
       <RunningJobBanner runningPost={runningJobData} queuedCount={queuedCount} />
 
       {/* Stats Summary Grid */}
-      <StatOverview posts={posts} />
+      <StatOverview
+        posts={posts}
+        activePosts={activePosts}
+        completedPosts={completedPosts}
+        retryingPosts={retryingPosts}
+        exhaustedPosts={exhaustedPosts}
+      />
 
       {/* Filter Navigation Bar */}
       <div className="card" style={{ padding: '12px 16px', marginBottom: 16 }}>

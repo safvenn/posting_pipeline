@@ -28,6 +28,18 @@ from backend.services.youtube_auth import (
     is_quota_error,
     quota_error_message,
 )
+from backend.services.workflow_logger import (
+    wlog,
+    YOUTUBE_UPLOAD_STARTED,
+    YOUTUBE_UPLOAD_COMPLETED,
+    ENRICHMENT_COMPLETED,
+    SCHEDULE_ASSIGNED,
+    SHEET_UPDATED,
+    SHEET_UPDATE_FAILED,
+    FAILED,
+)
+from backend.services.retry import schedule_retry, is_permanent_error, clear_retry_state
+
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +203,9 @@ def _schedule_single_post(post: Post, db) -> bool:
 
     post.error_message = None
     _set_status(db, post, "scheduled")
+    wlog(db, post_id=post.id, event_type=SCHEDULE_ASSIGNED, status="success",
+         sheet_row_id=post.sheet_row_id,
+         message=f"Scheduled at {result['date']}")
     logger.info(
         "Post %s scheduled at %s (sheet_row_id=%s) — Sheet will be updated only after YouTube upload succeeds",
         post.id, result["date"], post.sheet_row_id,
@@ -201,9 +216,6 @@ def _schedule_single_post(post: Post, db) -> bool:
     # ONLY after the YouTube upload confirms a valid video_id.
     # This prevents orphan rows in the Sheet when upload fails after scheduling.
 
-    # Cache Gemini result for sheet write-back after upload
-    with _gemini_cache_lock:
-        _gemini_result_cache[post.id] = result
     return True
 
 
@@ -230,25 +242,32 @@ def _upload_single_post(post: Post, db) -> bool:
     # No local FFmpeg re-encoding needed — avoids blocking Render's queue for 10+ minutes.
 
     try:
+        # Emit STARTED before calling API — so crash mid-upload is detectable
+        wlog(db, post_id=post.id, event_type=YOUTUBE_UPLOAD_STARTED, status="info",
+             sheet_row_id=post.sheet_row_id, attempt=(post.retry_count or 0) + 1)
+
         video_id = _do_upload(yt, post, video_path)
 
         # Guard: only proceed if YouTube returned a real video ID
         if not video_id or not video_id.strip():
             err = "YouTube upload returned empty video_id — upload may have failed silently"
             logger.error("Post %s: %s", post.id, err)
+            wlog(db, post_id=post.id, event_type=FAILED, status="failure", message=err)
             _clear_schedule_and_fail(db, post, err)
             return False
 
         post.youtube_video_id = video_id
         _set_status(db, post, "scheduled")
+        clear_retry_state(post, db)
+
+        wlog(db, post_id=post.id, event_type=YOUTUBE_UPLOAD_COMPLETED, status="success",
+             youtube_video_id=video_id, sheet_row_id=post.sheet_row_id)
 
         # Sheet is written ONLY here — with upload_id confirmed.
         # scheduled_at + upload_id + enriched_title all written in one atomic call.
-        _sheet_writeback(post.channel, post, video_id)
+        _sheet_writeback(post.channel, post, video_id, db)
 
         # Pre-create Instagram container while video file is still hot on disk.
-        # This solves the ephemeral disk problem: container_id stored in DB,
-        # so instagram_job.py can publish without needing the file later.
         try:
             from backend.services.instagram import pre_create_instagram_container
             threading.Thread(
@@ -271,11 +290,22 @@ def _upload_single_post(post: Post, db) -> bool:
         if is_quota_error(exc):
             err = quota_error_message(exc)
             logger.warning("Quota error uploading post %s: %s", post.id, err)
+            wlog(db, post_id=post.id, event_type=FAILED, status="failure", message=err)
+            _clear_schedule_and_fail(db, post, err)
+        elif is_permanent_error(exc):
+            err = f"Permanent error: {exc}"
+            logger.error("Permanent upload error for post %s: %s", post.id, err)
+            wlog(db, post_id=post.id, event_type=FAILED, status="failure", message=err)
             _clear_schedule_and_fail(db, post, err)
         else:
+            err = f"upload error: {exc}"
             logger.exception("Upload failed for post %s", post.id)
-            _clear_schedule_and_fail(db, post, f"upload error: {exc}")
+            wlog(db, post_id=post.id, event_type=FAILED, status="failure", message=err)
+            decision = schedule_retry(post, db, err)
+            if decision.exhausted:
+                _clear_schedule_and_fail(db, post, err)
         return False
+
 
 
 def _clear_schedule_and_fail(db, post: Post, error: str) -> None:
@@ -312,9 +342,9 @@ def _clear_schedule_and_fail(db, post: Post, error: str) -> None:
 
 
 
-# In-memory cache: post_id -> Gemini result dict (for sheet write-back after upload)
-_gemini_result_cache: dict[int, dict] = {}
-_gemini_cache_lock = threading.Lock()
+# NOTE: _gemini_result_cache removed — enriched data persisted directly in
+# Post.enriched_title / enriched_description / enriched_tags / first_comment_text columns.
+# This ensures sheet write-back survives process restarts.
 
 
 def enrich_one_post(post_id: int) -> None:
@@ -473,19 +503,19 @@ def _do_upload(yt, post: Post, video_path: str) -> str:
     return video_id
 
 
-def _sheet_writeback(channel: str, post: Post, video_id: str) -> None:
+def _sheet_writeback(channel: str, post: Post, video_id: str, db) -> None:
     """
     Write scheduled date, upload_id, enriched title back to Google Sheet.
-    Mirrors n8n "Append or update row in sheet" node.
+    Only called AFTER a confirmed youtube_video_id — never marks rows before that.
+
+    On success: emits SHEET_UPDATED, then advances next unscheduled row's slot.
+    On failure: emits SHEET_UPDATE_FAILED, retries up to 3 times with short backoff.
     """
+    import time as _time
     if not settings.google_sheets_service_account_json:
         return
 
-    # Prioritize post.sheet_row_id directly from the database record
-    with _gemini_cache_lock:
-        gemini_result = _gemini_result_cache.get(post.id)
-    sheet_row_id = post.sheet_row_id or (gemini_result.get("id") if gemini_result else None)
-
+    sheet_row_id = post.sheet_row_id
     if not sheet_row_id:
         logger.debug("No sheet row id for post %s, skipping sheet write-back", post.id)
         return
@@ -498,28 +528,60 @@ def _sheet_writeback(channel: str, post: Post, video_id: str) -> None:
         if dt.tzinfo is None:
             dt = pytz.timezone(settings.timezone).localize(dt)
         scheduled_str = dt.astimezone(pytz.timezone(settings.timezone)).strftime("%Y-%m-%dT%H:%M:%S+05:30")
-    elif gemini_result:
-        scheduled_str = gemini_result.get("date", "")
 
-    try:
-        from backend.services.sheets import update_row_after_upload
-        update_row_after_upload(
-            channel=channel,
-            row_id=sheet_row_id,
-            scheduled_at=scheduled_str,
-            upload_id=video_id,
-            enriched_title=post.enriched_title or post.title,
-        )
-        logger.info(
-            "Sheet write-back succeeded for post %s: row_id=%s, upload_id=%s, scheduled_at=%s",
-            post.id, sheet_row_id, video_id, scheduled_str,
-        )
-        # Clean cache entry
-        with _gemini_cache_lock:
-            _gemini_result_cache.pop(post.id, None)
-    except Exception as exc:
-        logger.error("Sheet write-back failed for post %s on row %s: %s", post.id, sheet_row_id, exc)
-        # Non-fatal — video is uploaded, sheet sync can be retried manually
+    # Retry loop (3 attempts, 5s then 15s backoff)
+    last_exc = None
+    for attempt in range(1, 4):
+        try:
+            from backend.services.sheets import update_row_after_upload
+            update_row_after_upload(
+                channel=channel,
+                row_id=sheet_row_id,
+                scheduled_at=scheduled_str,
+                upload_id=video_id,
+                enriched_title=post.enriched_title or post.title,
+            )
+            wlog(db, post_id=post.id, event_type=SHEET_UPDATED, status="success",
+                 youtube_video_id=video_id, sheet_row_id=sheet_row_id,
+                 message=f"Sheet row {sheet_row_id} marked completed")
+            logger.info(
+                "Sheet write-back succeeded for post %s: row_id=%s, upload_id=%s, scheduled_at=%s",
+                post.id, sheet_row_id, video_id, scheduled_str,
+            )
+
+            # Advance next eligible unscheduled row with next slot time
+            try:
+                from backend.services.sheets import get_first_unscheduled_row, update_row_fields
+                from backend.services.scheduler_logic import pick_next_slot
+                next_slot = pick_next_slot(channel, db)
+                next_row = get_first_unscheduled_row(channel)
+                if next_row and next_row.get("id"):
+                    next_slot_str = next_slot.strftime("%Y-%m-%dT%H:%M:%S+05:30")
+                    update_row_fields(channel, str(next_row["id"]), {"scheduled": next_slot_str})
+                    logger.info(
+                        "Sheet next-slot advanced: channel=%s row=%s slot=%s",
+                        channel, next_row["id"], next_slot_str,
+                    )
+            except Exception as slot_exc:
+                logger.warning("Could not advance next Sheet slot for channel %s: %s", channel, slot_exc)
+            return
+
+        except Exception as exc:
+            last_exc = exc
+            wlog(db, post_id=post.id, event_type=SHEET_UPDATE_FAILED, status="failure",
+                 sheet_row_id=sheet_row_id, attempt=attempt, message=str(exc)[:500])
+            logger.warning(
+                "Sheet write-back attempt %d/3 failed for post %s row %s: %s",
+                attempt, post.id, sheet_row_id, exc,
+            )
+            if attempt < 3:
+                _time.sleep(5 * attempt)
+
+    logger.error(
+        "Sheet write-back failed after 3 attempts for post %s row %s: %s",
+        post.id, sheet_row_id, last_exc,
+    )
+    # Non-fatal — video IS uploaded, sheet sync can be re-triggered manually
 
 
 # --------------------------------------------------------------------------- #

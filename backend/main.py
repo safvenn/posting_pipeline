@@ -94,15 +94,68 @@ async def lifespan(app: FastAPI):
     try:
         from backend.database import SessionLocal
         from backend.models import Post
+        from datetime import datetime, timezone as _tz
+        now = datetime.now(_tz.utc)
+
         with SessionLocal() as db:
-            stuck = db.query(Post).filter(Post.status.in_(["cleaning"])).all()
-            for p in stuck:
+            # 1. Reset stuck 'cleaning' posts
+            stuck_cleaning = db.query(Post).filter(Post.status.in_(["cleaning"])).all()
+            for p in stuck_cleaning:
                 logger.warning("Startup recovery: resetting stuck post %s from %s -> queued", p.id, p.status)
                 p.status = "queued"
                 p.error_message = None
-            if stuck:
+            if stuck_cleaning:
                 db.commit()
-                logger.info("Startup recovery: reset %d stuck post(s) to queued", len(stuck))
+                logger.info("Startup recovery: reset %d cleaning post(s) to queued", len(stuck_cleaning))
+
+            # 2. Reset Drive-pending posts whose upload wasn't confirmed
+            stuck_drive = db.query(Post).filter(
+                Post.status == "queued",
+                Post.drive_upload_status == "pending",
+            ).all()
+            for p in stuck_drive:
+                logger.warning("Startup recovery: resetting Drive-pending post %s to none", p.id)
+                p.drive_upload_status = "none"
+            if stuck_drive:
+                db.commit()
+                logger.info("Startup recovery: reset %d Drive-pending post(s)", len(stuck_drive))
+
+            # 3. Reset scheduled posts stuck without youtube_video_id (crash mid-upload)
+            # Only reset if they've been stuck > 15 minutes (upload threads never survived restart)
+            from datetime import timedelta
+            stale_cutoff = now - timedelta(minutes=15)
+            stuck_upload = db.query(Post).filter(
+                Post.status == "scheduled",
+                Post.youtube_video_id.is_(None),
+                Post.updated_at < stale_cutoff,
+            ).all()
+            for p in stuck_upload:
+                logger.warning(
+                    "Startup recovery: post %s stuck scheduled without video_id since %s, re-queuing enrichment",
+                    p.id, p.updated_at,
+                )
+                p.status = "cleaned"  # re-enter from enrichment step
+                p.scheduled_at = None
+            if stuck_upload:
+                db.commit()
+                logger.info("Startup recovery: re-queued %d stuck-upload post(s) from cleaned", len(stuck_upload))
+
+            # 4. Clear next_retry_at for retryable posts whose backoff has expired
+            expired_retry = db.query(Post).filter(
+                Post.next_retry_at.isnot(None),
+                Post.next_retry_at <= now,
+                Post.status.in_(["queued", "failed"]),
+                Post.retry_count < Post.max_retries,
+            ).all()
+            for p in expired_retry:
+                logger.info("Startup recovery: post %s retry backoff expired, clearing next_retry_at", p.id)
+                if p.status == "failed":
+                    p.status = "queued"
+                p.next_retry_at = None
+            if expired_retry:
+                db.commit()
+                logger.info("Startup recovery: cleared retry backoff on %d post(s)", len(expired_retry))
+
     except Exception as exc:
         logger.warning("Startup post recovery error: %s", exc)
 
@@ -130,36 +183,46 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # ---- CORS: Allow all frontends (Google Flow, Labs, Vercel, Extension, Localhost) ----
+    # ---- CORS: explicit trusted-origin allowlist — NO wildcard regex with credentials ----
     raw_origins = settings.allowed_origins
     allowed = [o.strip() for o in raw_origins.split(",") if o.strip()]
     if settings.backend_public_url:
         allowed.append(settings.backend_public_url.rstrip("/"))
+    # De-duplicate
+    allowed = list(dict.fromkeys(o for o in allowed if o))
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed,
-        allow_origin_regex=r".*",       # Matches all origins (Flow, Labs, Vercel, Extension, Localhost) with credentials
+        # allow_origin_regex intentionally omitted — combining regex=.* with
+        # allow_credentials=True allows any attacker origin to read credentialed
+        # responses (cookies / auth headers).
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+        expose_headers=["Content-Disposition"],
     )
 
-    # Global exception handler — ensures 500 errors always return CORS headers so browser never masks them as 'Failed to fetch'
+    _trusted_origins: set[str] = set(allowed)
+
+    # Global exception handler — return CORS headers only for trusted origins
     @app.exception_handler(Exception)
     async def global_exception_handler(request, exc: Exception):
         logger.exception("Unhandled server exception: %s", exc)
         from fastapi.responses import JSONResponse
-        origin = request.headers.get("origin") or "*"
+        origin = request.headers.get("origin", "")
+        cors_origin = origin if origin in _trusted_origins else ""
+        headers: dict[str, str] = {}
+        if cors_origin:
+            headers = {
+                "Access-Control-Allow-Origin": cors_origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Vary": "Origin",
+            }
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Internal server error: {str(exc)}"},
-            headers={
-                "Access-Control-Allow-Origin": origin,
-                "Access-Control-Allow-Credentials": "true",
-                "Access-Control-Allow-Headers": "*",
-                "Access-Control-Allow-Methods": "*",
-            },
+            content={"detail": "Internal server error"},
+            headers=headers,
         )
 
 

@@ -1,11 +1,14 @@
 """Extension ingest router — provides live channels, sheet rows, and video ingestion for the Chrome extension."""
 from __future__ import annotations
 
+import ipaddress
 import logging
+import socket
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, UploadFile
@@ -20,6 +23,79 @@ from backend.routers.posts import _validate_video_file, is_valid_video_signature
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/extension", tags=["extension"])
+
+# ---------------------------------------------------------------------------
+# SSRF — private / reserved network ranges to block
+# ---------------------------------------------------------------------------
+
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),   # Shared address space (RFC 6598)
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local / cloud metadata
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("198.18.0.0/15"),   # Benchmark testing (RFC 2544)
+    ipaddress.ip_network("198.51.100.0/24"), # TEST-NET-2 (RFC 5737)
+    ipaddress.ip_network("203.0.113.0/24"),  # TEST-NET-3 (RFC 5737)
+    ipaddress.ip_network("240.0.0.0/4"),     # Reserved
+    # IPv6
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),        # Unique local
+    ipaddress.ip_network("fe80::/10"),       # Link-local
+    ipaddress.ip_network("::ffff:0:0/96"),   # IPv4-mapped
+]
+
+_CLOUD_METADATA_HOSTS = {
+    "169.254.169.254",  # AWS / GCP / Azure IMDS
+    "metadata.google.internal",
+    "metadata.internal",
+}
+
+
+def _is_safe_host(hostname: str) -> None:
+    """
+    Resolve hostname and reject if any resolved IP is private/loopback/cloud-metadata.
+    Raises HTTPException(400) on SSRF risk.
+    """
+    hostname_lower = hostname.lower()
+    # Reject cloud metadata hostnames by name
+    if hostname_lower in _CLOUD_METADATA_HOSTS or hostname_lower.endswith(".internal"):
+        raise HTTPException(status_code=400, detail="SSRF: target host not permitted.")
+
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail=f"Could not resolve host: {hostname}") from exc
+
+    for info in infos:
+        addr_str = info[4][0]
+        try:
+            addr = ipaddress.ip_address(addr_str)
+        except ValueError:
+            continue
+        for net in _BLOCKED_NETWORKS:
+            if addr in net:
+                raise HTTPException(
+                    status_code=400,
+                    detail="SSRF: URL resolves to a private or reserved address and cannot be fetched.",
+                )
+
+
+def _validate_ingest_url(url: str) -> None:
+    """Full SSRF validation: scheme, host resolution, private-IP rejection."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid URL scheme. Only http and https are permitted.",
+        )
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(status_code=400, detail="Invalid URL: missing host.")
+    _is_safe_host(host)
+
 
 
 def _verify_extension_auth(
@@ -301,11 +377,8 @@ async def ingest_from_extension(
             status_code=400,
             detail="Blob URLs cannot be downloaded directly by the server. Please upload the video file directly as multipart/form-data via /api/extension/upload.",
         )
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid video URL protocol. Must be HTTP or HTTPS.",
-        )
+    # Full SSRF validation: scheme + DNS resolution + private-IP check
+    _validate_ingest_url(url)
 
     title = (body.title or "").strip()
     description = (body.description or "").strip()
@@ -369,28 +442,63 @@ async def ingest_from_extension(
     filename = f"flow_{uuid.uuid4().hex}.mp4"
     dest = upload_dir / filename
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
-        async with client.stream("GET", url) as response:
-            if response.status_code != 200:
-                raise HTTPException(status_code=502, detail=f"Download failed with HTTP {response.status_code}")
+    max_download_bytes = settings.max_download_size_mb * 1024 * 1024
 
-            # Check if redirected to login page or returned non-video content
-            final_url = str(response.url)
-            content_type = response.headers.get("content-type", "").lower()
-            if "accounts.google.com" in final_url or "login" in final_url:
-                raise HTTPException(
-                    status_code=400,
-                    detail="This video URL requires Google authentication and cannot be downloaded directly by the server. Please play the video in Flow and upload using the extension uploader.",
-                )
-            if "text/html" in content_type or "application/json" in content_type:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"The URL returned {content_type} instead of a video. Please ensure the video is playing in Flow, or click 'Choose / Upload Video File'.",
-                )
+    # SSRF-safe redirect handler: validate each redirect destination
+    async def _ssrf_safe_download(start_url: str) -> None:
+        """Download with redirect validation and size cap."""
+        _validate_ingest_url(start_url)
+        timeout = httpx.Timeout(connect=10.0, read=120.0, write=None, pool=None)
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=timeout,
+        ) as client:
+            current_url = start_url
+            redirect_count = 0
+            while True:
+                async with client.stream("GET", current_url) as response:
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        redirect_count += 1
+                        if redirect_count > 3:
+                            raise HTTPException(status_code=400, detail="Too many redirects.")
+                        location = response.headers.get("location", "")
+                        if not location:
+                            raise HTTPException(status_code=400, detail="Redirect with no Location header.")
+                        # Validate redirect target before following
+                        _validate_ingest_url(location)
+                        current_url = location
+                        continue
 
-            with open(dest, "wb") as f:
-                async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
-                    f.write(chunk)
+                    if response.status_code != 200:
+                        raise HTTPException(status_code=502, detail=f"Download failed with HTTP {response.status_code}")
+
+                    final_url = str(response.url)
+                    content_type = response.headers.get("content-type", "").lower()
+                    if "accounts.google.com" in final_url or "login" in final_url:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="This video URL requires Google authentication and cannot be downloaded directly.",
+                        )
+                    if "text/html" in content_type or "application/json" in content_type:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"URL returned {content_type} instead of a video.",
+                        )
+
+                    downloaded = 0
+                    with open(dest, "wb") as f:
+                        async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
+                            downloaded += len(chunk)
+                            if downloaded > max_download_bytes:
+                                dest.unlink(missing_ok=True)
+                                raise HTTPException(
+                                    status_code=413,
+                                    detail=f"Download exceeds maximum allowed size ({settings.max_download_size_mb} MB).",
+                                )
+                            f.write(chunk)
+                    break
+
+    await _ssrf_safe_download(url)
 
     # Validate downloaded file magic bytes
     try:
