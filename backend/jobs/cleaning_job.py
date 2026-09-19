@@ -110,6 +110,46 @@ def _do_drive_upload(post: Post, db) -> bool:
         return False  # caller will re-queue
 
 
+def _do_clean_drive_upload(post: Post, db) -> bool:
+    """Upload cleaned (watermark-free) video to Google Drive."""
+    folder_id = settings.google_drive_indian_kitchen_folder_id
+    if not folder_id:
+        return True
+
+    from backend.services.watermark import resolve_video_path
+    video_p = resolve_video_path(post.clean_video_path, is_clean=True)
+    if not video_p or not video_p.exists():
+        logger.warning("post_id=%s Clean Drive upload skipped: clean video missing %s", post.id, post.clean_video_path)
+        return False
+
+    try:
+        dest_name = f"post_{post.id}_cleaned_{video_p.name}"
+        wlog(db, post_id=post.id, event_type=DRIVE_UPLOAD_STARTED, status="info",
+             message=f"Uploading cleaned video {dest_name} to Drive folder {folder_id}")
+
+        storage = get_storage()
+        file_id = storage.upload(
+            video_p,
+            dest_name=dest_name,
+            folder_id=folder_id,
+            channel=post.channel,
+        )
+
+        post.clean_drive_file_id = file_id
+        post.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        wlog(db, post_id=post.id, event_type=DRIVE_UPLOAD_COMPLETED, status="success",
+             drive_file_id=file_id, message=f"Cleaned video Drive upload complete: {dest_name}")
+        logger.info("post_id=%s Clean Drive upload complete: clean_drive_file_id=%s", post.id, file_id)
+        return True
+    except Exception as exc:
+        logger.warning("post_id=%s Clean Drive upload failed (non-fatal): %s", post.id, exc)
+        wlog(db, post_id=post.id, event_type=DRIVE_UPLOAD_FAILED, status="failure",
+             message=f"Clean video Drive upload failed: {str(exc)[:500]}")
+        return False
+
+
 def clean_one_post(post_id: int) -> None:
     """
     Start watermark removal for a single post in a BACKGROUND THREAD.
@@ -163,6 +203,9 @@ def clean_one_post(post_id: int) -> None:
             if post and post.status == "cleaned":
                 wlog(db, post_id=post_id, event_type=CLEANING_COMPLETED, status="success")
                 logger.info("[Cleaning] Watermark removal complete for post %s", post_id)
+
+                # Step 3: Upload cleaned video to Google Drive for archiving and Instagram publishing
+                _do_clean_drive_upload(post, db)
             else:
                 status_now = post.status if post else "unknown"
                 logger.warning("[Cleaning] Post %s ended with status=%s", post_id, status_now)

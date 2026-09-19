@@ -50,6 +50,15 @@ class StorageService(Protocol):
         """Return a shareable download URL for the file reference."""
         ...
 
+    def download(
+        self,
+        file_ref: str,
+        dest_path: Path,
+        channel: str | None = None,
+    ) -> Path:
+        """Download file by reference to dest_path."""
+        ...
+
 
 class GoogleDriveStorage:
     """
@@ -194,6 +203,35 @@ class GoogleDriveStorage:
         """Return a direct Drive download link (requires shared access for external use)."""
         return f"https://drive.google.com/uc?id={file_ref}&export=download"
 
+    def download(
+        self,
+        file_id: str,
+        dest_path: Path,
+        channel: str | None = None,
+    ) -> Path:
+        """
+        Download a file from Google Drive by file_id to dest_path.
+        Uses chunked media download via Google Drive API v3.
+        """
+        from googleapiclient.http import MediaIoBaseDownload
+
+        service = self._get_service(channel=channel)
+        dest_path = Path(dest_path)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+        with open(dest_path, "wb") as fh:
+            downloader = MediaIoBaseDownload(fh, request, chunksize=10 * 1024 * 1024)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+                if status:
+                    pct = int(status.progress() * 100)
+                    logger.debug("Drive download %s: %d%% complete", file_id, pct)
+
+        logger.info("Drive download complete: id=%s -> path=%s", file_id, dest_path)
+        return dest_path
+
 
 # Module-level singleton — created once per process
 _storage_instance: GoogleDriveStorage | None = None
@@ -289,4 +327,61 @@ def upload_post_to_drive(post_id: int) -> bool:
                 return False
 
             schedule_retry(post, db, err)
+            return False
+
+
+def upload_cleaned_post_to_drive(post_id: int) -> bool:
+    """Upload cleaned (watermark-free) video of post to Google Drive and update DB."""
+    from datetime import datetime, timezone
+    from backend.database import SessionLocal
+    from backend.models import Post
+    from backend.services.workflow_logger import (
+        wlog, DRIVE_UPLOAD_STARTED, DRIVE_UPLOAD_COMPLETED, DRIVE_UPLOAD_FAILED
+    )
+    from backend.services.watermark import resolve_video_path
+
+    with SessionLocal() as db:
+        post = db.get(Post, post_id)
+        if not post:
+            logger.warning("upload_cleaned_post_to_drive: Post %s not found", post_id)
+            return False
+
+        if post.clean_drive_file_id:
+            return True
+
+        folder_id = settings.google_drive_indian_kitchen_folder_id
+        if not folder_id:
+            logger.warning("post_id=%s folder_id not set — skipping clean Drive upload", post_id)
+            return True
+
+        video_p = resolve_video_path(post.clean_video_path, is_clean=True)
+        if not video_p or not video_p.exists():
+            logger.error("post_id=%s Clean video missing: %s", post_id, post.clean_video_path)
+            return False
+
+        try:
+            dest_name = f"post_{post.id}_cleaned_{video_p.name}"
+            wlog(db, post_id=post.id, event_type=DRIVE_UPLOAD_STARTED, status="info",
+                 message=f"Uploading cleaned video {dest_name} to Drive folder {folder_id}")
+
+            storage = get_storage()
+            file_id = storage.upload(
+                video_p,
+                dest_name=dest_name,
+                folder_id=folder_id,
+                channel=post.channel,
+            )
+
+            post.clean_drive_file_id = file_id
+            post.updated_at = datetime.now(timezone.utc)
+            db.commit()
+
+            wlog(db, post_id=post.id, event_type=DRIVE_UPLOAD_COMPLETED, status="success",
+                 drive_file_id=file_id, message=f"Cleaned video Drive upload complete: {dest_name}")
+            logger.info("post_id=%s Clean Drive upload done clean_drive_file_id=%s", post.id, file_id)
+            return True
+        except Exception as exc:
+            logger.exception("post_id=%s Clean Drive upload failed: %s", post.id, exc)
+            wlog(db, post_id=post.id, event_type=DRIVE_UPLOAD_FAILED, status="failure",
+                 message=f"Clean video upload failed: {str(exc)[:500]}")
             return False

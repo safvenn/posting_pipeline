@@ -49,6 +49,7 @@ class Post(Base):
 
     # Google Drive archive
     drive_file_id: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    clean_drive_file_id: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     drive_upload_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="none", index=True
     )  # none | pending | completed | failed

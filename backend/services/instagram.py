@@ -501,6 +501,23 @@ def pre_create_instagram_container(post: Post, db: Session) -> Optional[str]:
     # Find video file
     from backend.services.watermark import resolve_video_path
     video_p = resolve_video_path(post.clean_video_path, is_clean=True)
+
+    # If clean video missing from disk, download from Google Drive
+    if (not video_p or not video_p.exists()) and getattr(post, "clean_drive_file_id", None):
+        logger.info("[Instagram] Pre-create: clean video missing, downloading from Drive (%s)...", post.clean_drive_file_id)
+        from backend.services.storage import get_storage
+        from backend.config import settings
+        storage = get_storage()
+        dest = settings.processed_path() / f"post_{post.id}_clean.mp4"
+        try:
+            storage.download(post.clean_drive_file_id, dest, channel=post.channel)
+            video_p = dest
+            post.clean_video_path = str(dest)
+            db.commit()
+            logger.info("[Instagram] Pre-create: clean video restored from Drive to %s", dest)
+        except Exception as exc:
+            logger.warning("[Instagram] Pre-create: failed to download clean video from Drive: %s", exc)
+
     if not video_p or not video_p.exists():
         video_p = resolve_video_path(post.video_path, is_clean=False)
 
@@ -588,8 +605,41 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
 
     from backend.services.watermark import resolve_video_path
     video_p = resolve_video_path(post.clean_video_path, is_clean=True)
+
+    # 1. If clean video missing from disk, download from Google Drive
+    if (not video_p or not video_p.exists()) and getattr(post, "clean_drive_file_id", None):
+        logger.info("[Instagram] Clean video missing from disk for post %s, downloading from Drive (%s)...", post.id, post.clean_drive_file_id)
+        from backend.services.storage import get_storage
+        from backend.config import settings
+        storage = get_storage()
+        dest = settings.processed_path() / f"post_{post.id}_clean.mp4"
+        try:
+            storage.download(post.clean_drive_file_id, dest, channel=post.channel)
+            video_p = dest
+            post.clean_video_path = str(dest)
+            db.commit()
+            logger.info("[Instagram] Clean video restored from Drive to %s", dest)
+        except Exception as exc:
+            logger.warning("[Instagram] Failed to restore clean video from Drive: %s", exc)
+
     if not video_p or not video_p.exists():
         video_p = resolve_video_path(post.video_path, is_clean=False)
+
+    # 2. Fallback to raw video from Drive if clean video not found
+    if (not video_p or not video_p.exists()) and getattr(post, "drive_file_id", None):
+        logger.info("[Instagram] Video missing from disk for post %s, downloading raw from Drive (%s)...", post.id, post.drive_file_id)
+        from backend.services.storage import get_storage
+        from backend.config import settings
+        storage = get_storage()
+        dest = settings.upload_path() / f"post_{post.id}_raw.mp4"
+        try:
+            storage.download(post.drive_file_id, dest, channel=post.channel)
+            video_p = dest
+            post.video_path = str(dest)
+            db.commit()
+            logger.info("[Instagram] Raw video restored from Drive to %s", dest)
+        except Exception as exc:
+            logger.warning("[Instagram] Failed to restore raw video from Drive: %s", exc)
 
     video_path = str(video_p) if video_p and video_p.exists() else (post.clean_video_path or post.video_path)
 

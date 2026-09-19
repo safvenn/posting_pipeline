@@ -612,11 +612,41 @@ def get_post_video(post_id: int, db: Session = Depends(get_db)):
 
     from backend.services.watermark import resolve_video_path
     video_p = resolve_video_path(post.clean_video_path, is_clean=True)
+
+    # 1. If clean video is missing from disk, try fetching from Google Drive
+    if (not video_p or not video_p.exists()) and getattr(post, "clean_drive_file_id", None):
+        from backend.services.storage import get_storage
+        storage = get_storage()
+        dest = settings.processed_path() / f"post_{post.id}_clean.mp4"
+        try:
+            storage.download(post.clean_drive_file_id, dest, channel=post.channel)
+            video_p = dest
+            post.clean_video_path = str(dest)
+            db.commit()
+            logger.info("Fetched clean video from Drive for post %s to %s", post.id, dest)
+        except Exception as exc:
+            logger.warning("Failed to download clean video from Drive for post %s: %s", post.id, exc)
+
+    # 2. Check raw video path
     if not video_p or not video_p.exists():
         video_p = resolve_video_path(post.video_path, is_clean=False)
 
+    # 3. If raw video also missing from disk, try fetching raw from Drive
+    if (not video_p or not video_p.exists()) and getattr(post, "drive_file_id", None):
+        from backend.services.storage import get_storage
+        storage = get_storage()
+        dest = settings.upload_path() / f"post_{post.id}_raw.mp4"
+        try:
+            storage.download(post.drive_file_id, dest, channel=post.channel)
+            video_p = dest
+            post.video_path = str(dest)
+            db.commit()
+            logger.info("Fetched raw video from Drive for post %s to %s", post.id, dest)
+        except Exception as exc:
+            logger.warning("Failed to download raw video from Drive for post %s: %s", post.id, exc)
+
     if not video_p or not video_p.exists():
-        raise HTTPException(status_code=404, detail="Video file not found on disk")
+        raise HTTPException(status_code=404, detail="Video file not found on disk or Drive")
 
     return FileResponse(
         path=str(video_p),

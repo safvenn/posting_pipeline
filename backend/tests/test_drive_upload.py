@@ -107,6 +107,58 @@ class TestDriveUpload:
         assert result is True
         assert post.drive_upload_status == "completed"
 
+    def test_clean_drive_upload_success(self):
+        """Cleaned video upload sets clean_drive_file_id on post."""
+        from backend.jobs.cleaning_job import _do_clean_drive_upload
+
+        post = _make_post()
+        post.clean_video_path = "/tmp/test_clean.mp4"
+        post.channel = "the_indian_kitchen"
+        db = _make_db()
+
+        with patch("backend.jobs.cleaning_job.settings") as mock_settings, \
+             patch("backend.jobs.cleaning_job.wlog"), \
+             patch("backend.services.watermark.resolve_video_path") as mock_resolve, \
+             patch("backend.services.storage.GoogleDriveStorage.upload", return_value="clean_drive_xyz999"):
+
+            mock_settings.google_drive_indian_kitchen_folder_id = "folder_xyz"
+            mock_resolve.return_value = Path("/tmp/test_clean.mp4")
+
+            from backend.services.storage import GoogleDriveStorage
+            mock_storage = MagicMock(spec=GoogleDriveStorage)
+            mock_storage.upload.return_value = "clean_drive_xyz999"
+
+            with patch("backend.services.storage._storage_instance", mock_storage), \
+                 patch("pathlib.Path.exists", return_value=True):
+                result = _do_clean_drive_upload(post, db)
+
+        assert result is True
+        assert post.clean_drive_file_id == "clean_drive_xyz999"
+        db.commit.assert_called()
+
+    def test_storage_download_calls_get_media(self, tmp_path):
+        """Storage download invokes Drive API get_media and writes to dest_path."""
+        from backend.services.storage import GoogleDriveStorage
+
+        storage = GoogleDriveStorage()
+        mock_service = MagicMock()
+        mock_request = MagicMock()
+        mock_service.files().get_media.return_value = mock_request
+
+        dest = tmp_path / "downloaded.mp4"
+
+        with patch.object(storage, "_get_service", return_value=mock_service), \
+             patch("googleapiclient.http.MediaIoBaseDownload") as mock_downloader_cls:
+
+            mock_downloader = MagicMock()
+            mock_downloader.next_chunk.return_value = (MagicMock(progress=lambda: 1.0), True)
+            mock_downloader_cls.return_value = mock_downloader
+
+            res = storage.download("file_123", dest)
+
+        assert res == dest
+        mock_service.files().get_media.assert_called_with(fileId="file_123", supportsAllDrives=True)
+
 
 class TestYouTubeIdempotency:
     def test_existing_video_id_skips_upload(self):
