@@ -156,6 +156,17 @@ async def lifespan(app: FastAPI):
                 db.commit()
                 logger.info("Startup recovery: cleared retry backoff on %d post(s)", len(expired_retry))
 
+            # 5. Automatically trigger Drive upload for any posts missing drive_file_id
+            import threading
+            from backend.services.storage import upload_post_to_drive
+            missing_drive = db.query(Post.id).filter(
+                Post.drive_file_id.is_(None),
+                Post.drive_upload_status.in_(["none", "pending", "failed"]),
+            ).all()
+            for (p_id,) in missing_drive:
+                logger.info("Startup recovery: triggering background Drive upload for post %s", p_id)
+                threading.Thread(target=upload_post_to_drive, args=(p_id,), daemon=True).start()
+
     except Exception as exc:
         logger.warning("Startup post recovery error: %s", exc)
 

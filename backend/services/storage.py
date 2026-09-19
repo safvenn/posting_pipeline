@@ -155,3 +155,83 @@ def get_storage() -> GoogleDriveStorage:
     if _storage_instance is None:
         _storage_instance = GoogleDriveStorage()
     return _storage_instance
+
+
+def upload_post_to_drive(post_id: int) -> bool:
+    """Upload original video of post to Google Drive and update DB.
+    
+    Can be run as a FastAPI BackgroundTask or called directly during ingest.
+    """
+    from datetime import datetime, timezone
+    from backend.database import SessionLocal
+    from backend.models import Post
+    from backend.services.workflow_logger import (
+        wlog, DRIVE_UPLOAD_STARTED, DRIVE_UPLOAD_COMPLETED, DRIVE_UPLOAD_FAILED
+    )
+    from backend.services.retry import is_permanent_error, schedule_retry
+
+    with SessionLocal() as db:
+        post = db.get(Post, post_id)
+        if not post:
+            logger.warning("upload_post_to_drive: Post %s not found", post_id)
+            return False
+
+        if post.drive_upload_status == "completed":
+            return True
+
+        folder_id = settings.google_drive_indian_kitchen_folder_id
+        if not folder_id:
+            logger.warning(
+                "post_id=%s GOOGLE_DRIVE_INDIAN_KITCHEN_FOLDER_ID not set — skipping Drive upload",
+                post_id,
+            )
+            post.drive_upload_status = "completed"
+            db.commit()
+            return True
+
+        video_path = Path(post.video_path)
+        if not video_path.exists():
+            logger.error("post_id=%s Drive upload skipped: video file missing %s", post_id, video_path)
+            post.drive_upload_status = "failed"
+            post.last_error = f"Video file missing at {video_path}"
+            db.commit()
+            return False
+
+        post.drive_upload_status = "pending"
+        post.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        try:
+            dest_name = f"post_{post.id}_{video_path.name}"
+            wlog(db, post_id=post.id, event_type=DRIVE_UPLOAD_STARTED, status="info",
+                 message=f"Uploading {dest_name} to Drive folder {folder_id}")
+
+            storage = get_storage()
+            file_id = storage.upload(video_path, dest_name=dest_name, folder_id=folder_id)
+
+            post.drive_file_id = file_id
+            post.drive_upload_status = "completed"
+            post.updated_at = datetime.now(timezone.utc)
+            db.commit()
+
+            wlog(db, post_id=post.id, event_type=DRIVE_UPLOAD_COMPLETED, status="success",
+                 drive_file_id=file_id, message=f"Drive upload complete: {dest_name}")
+            logger.info("post_id=%s Drive upload done drive_file_id=%s", post.id, file_id)
+            return True
+
+        except Exception as exc:
+            err = str(exc)
+            logger.exception("post_id=%s Drive upload failed: %s", post.id, err)
+            wlog(db, post_id=post.id, event_type=DRIVE_UPLOAD_FAILED, status="failure",
+                 message=err[:500], attempt=post.retry_count + 1)
+
+            if is_permanent_error(exc):
+                logger.error("post_id=%s Drive upload permanent error: %s", post.id, err)
+                post.drive_upload_status = "failed"
+                post.last_error = err[:2000]
+                post.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                return False
+
+            schedule_retry(post, db, err)
+            return False

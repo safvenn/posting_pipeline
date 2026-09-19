@@ -290,6 +290,13 @@ async def create_post(
         post.id, channel, title, clean_row_id, dest,
     )
 
+    # Trigger Google Drive upload immediately
+    try:
+        from backend.services.storage import upload_post_to_drive
+        background_tasks.add_task(upload_post_to_drive, post.id)
+    except Exception as exc:
+        logger.warning("Could not schedule Drive upload: %s", exc)
+
     # Trigger background pipeline execution immediately
     try:
         from backend.jobs.job_queue import run_serial_queue

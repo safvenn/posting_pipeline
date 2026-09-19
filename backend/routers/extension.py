@@ -340,6 +340,13 @@ async def upload_from_extension(
         db.refresh(post)
         post_id = post.id
 
+    # Trigger Google Drive upload immediately
+    try:
+        from backend.services.storage import upload_post_to_drive
+        background_tasks.add_task(upload_post_to_drive, post_id)
+    except Exception as exc:
+        logger.warning("Could not schedule Drive upload: %s", exc)
+
     # Trigger serial pipeline queue immediately
     try:
         from backend.jobs.job_queue import run_serial_queue
@@ -532,6 +539,13 @@ async def ingest_from_extension(
         db.commit()
         db.refresh(post)
         post_id = post.id
+
+    # Trigger Google Drive upload immediately
+    try:
+        from backend.services.storage import upload_post_to_drive
+        background_tasks.add_task(upload_post_to_drive, post_id)
+    except Exception as exc:
+        logger.warning("Could not schedule Drive upload: %s", exc)
 
     try:
         from backend.jobs.job_queue import run_serial_queue
