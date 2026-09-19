@@ -205,9 +205,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed,
-        # allow_origin_regex intentionally omitted — combining regex=.* with
-        # allow_credentials=True allows any attacker origin to read credentialed
-        # responses (cookies / auth headers).
+        allow_origin_regex=r"^(https://([a-zA-Z0-9-]+\.)*(flow\.google|flow\.google\.com|labs\.google)|chrome-extension://.*)$",
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-API-Key"],
@@ -220,9 +218,15 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def global_exception_handler(request, exc: Exception):
         logger.exception("Unhandled server exception: %s", exc)
+        import re
         from fastapi.responses import JSONResponse
         origin = request.headers.get("origin", "")
-        cors_origin = origin if origin in _trusted_origins else ""
+        is_trusted = (
+            origin in _trusted_origins
+            or origin.startswith("chrome-extension://")
+            or bool(re.match(r"^https://([a-zA-Z0-9-]+\.)*(flow\.google|flow\.google\.com|labs\.google)$", origin))
+        )
+        cors_origin = origin if is_trusted else ""
         headers: dict[str, str] = {}
         if cors_origin:
             headers = {

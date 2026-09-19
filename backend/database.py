@@ -36,7 +36,13 @@ is_sqlite = db_url.startswith("sqlite")
 connect_args = {"check_same_thread": False} if is_sqlite else {}
 engine_kwargs = {"connect_args": connect_args}
 if not is_sqlite:
-    engine_kwargs.update({"pool_pre_ping": True, "pool_size": 10, "max_overflow": 20})
+    engine_kwargs.update({
+        "pool_pre_ping": True,
+        "pool_size": 3,
+        "max_overflow": 2,
+        "pool_recycle": 300,
+        "pool_timeout": 30,
+    })
 
 engine = create_engine(
     db_url,

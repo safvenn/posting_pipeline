@@ -79,7 +79,10 @@ def get_all_channel_keys(db: Session | None = None) -> list[tuple[str, str, bool
     channels = []
     if db:
         try:
-            custom = db.query(ChannelConfig).filter(ChannelConfig.is_active == True).all()
+            custom = db.query(ChannelConfig).filter(
+                ChannelConfig.is_active == True,
+                ChannelConfig.key != "google_drive",
+            ).all()
             for c in custom:
                 channels.append((c.key, c.display_name, True))
         except Exception as exc:

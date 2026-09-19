@@ -53,6 +53,9 @@ def run_migrations():
                 if "drive_file_id" not in post_cols:
                     logger.info("Adding drive_file_id column to posts table")
                     conn.execute(text("ALTER TABLE posts ADD COLUMN drive_file_id VARCHAR(256)"))
+                if "clean_drive_file_id" not in post_cols:
+                    logger.info("Adding clean_drive_file_id column to posts table")
+                    conn.execute(text("ALTER TABLE posts ADD COLUMN clean_drive_file_id VARCHAR(256)"))
                 if "drive_upload_status" not in post_cols:
                     logger.info("Adding drive_upload_status column to posts table")
                     conn.execute(text("ALTER TABLE posts ADD COLUMN drive_upload_status VARCHAR(32) DEFAULT 'none'"))

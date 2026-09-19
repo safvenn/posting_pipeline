@@ -87,18 +87,11 @@ class GoogleDriveStorage:
 
             if not refresh_token:
                 with SessionLocal() as db:
-                    # 1. Look for dedicated "google_drive" storage config
+                    # Look ONLY for dedicated "google_drive" storage config
                     cfg = db.query(ChannelConfig).filter(
                         ChannelConfig.key == "google_drive",
                         ChannelConfig.is_active == True,
                     ).first()
-
-                    # 2. Fallback to channel-specific config
-                    if not (cfg and cfg.refresh_token) and channel:
-                        cfg = db.query(ChannelConfig).filter(
-                            ChannelConfig.key == channel,
-                            ChannelConfig.is_active == True,
-                        ).first()
 
                     if cfg and cfg.refresh_token:
                         refresh_token = cfg.refresh_token
@@ -107,6 +100,7 @@ class GoogleDriveStorage:
                         source = f"channel_configs({cfg.key})"
 
             if refresh_token and client_id and client_secret:
+                from google.auth.transport.requests import Request
                 creds = Credentials(
                     token=None,
                     refresh_token=refresh_token,
@@ -115,8 +109,13 @@ class GoogleDriveStorage:
                     client_secret=client_secret,
                     scopes=_DRIVE_SCOPES,
                 )
-                logger.info("Using user OAuth credentials for Drive (source=%s)", source)
-                return build("drive", "v3", credentials=creds, cache_discovery=False)
+                try:
+                    # Validate credentials by refreshing before building service
+                    creds.refresh(Request())
+                    logger.info("Using user OAuth credentials for Drive (source=%s)", source)
+                    return build("drive", "v3", credentials=creds, cache_discovery=False)
+                except Exception as refresh_err:
+                    logger.warning("User OAuth Drive credentials invalid or missing Drive scope (%s): %s — falling back to Service Account", source, refresh_err)
         except Exception as exc:
             logger.debug("User OAuth Drive service initialization skipped: %s", exc)
 
