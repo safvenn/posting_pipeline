@@ -198,6 +198,12 @@ def get_channel_auth_url(channel: str, request: Request, db: Session = Depends(g
 public_router = APIRouter(prefix="/api/channels", tags=["channels-oauth"])
 
 
+@public_router.get("/drive/auth-url")
+def get_drive_auth_url_public(request: Request):
+    """Public endpoint to generate Google OAuth URL for Drive storage."""
+    return get_drive_auth_url(request=request)
+
+
 @public_router.get("/oauth/callback")
 def oauth_callback(code: str, state: str, request: Request, db: Session = Depends(get_db)):
     """
