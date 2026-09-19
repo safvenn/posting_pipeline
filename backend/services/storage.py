@@ -64,7 +64,7 @@ class GoogleDriveStorage:
         self._service = None  # lazy-init
 
     def _get_service(self, channel: str | None = None):
-        # 1. First attempt to use user OAuth credentials (from ChannelConfig)
+        # 1. First attempt to use user OAuth credentials (from ChannelConfig or settings)
         # This uses the user's personal Google Drive storage quota (Option B for personal @gmail.com)
         try:
             from backend.database import SessionLocal
@@ -73,27 +73,41 @@ class GoogleDriveStorage:
             from googleapiclient.discovery import build
 
             client_id, client_secret = settings.get_google_oauth_credentials()
-            with SessionLocal() as db:
-                query = db.query(ChannelConfig).filter(ChannelConfig.is_active == True)
-                if channel:
-                    cfg = query.filter(ChannelConfig.key == channel).first()
-                else:
-                    cfg = query.first()
+            refresh_token = settings.google_drive_refresh_token or ""
+            source = "env"
 
-                if cfg and cfg.refresh_token:
-                    cid = cfg.client_id or client_id
-                    csec = cfg.client_secret or client_secret
-                    if cid and csec:
-                        creds = Credentials(
-                            token=None,
-                            refresh_token=cfg.refresh_token,
-                            token_uri="https://oauth2.googleapis.com/token",
-                            client_id=cid,
-                            client_secret=csec,
-                            scopes=_DRIVE_SCOPES,
-                        )
-                        logger.info("Using user OAuth credentials for Drive (channel=%s)", cfg.key)
-                        return build("drive", "v3", credentials=creds, cache_discovery=False)
+            if not refresh_token:
+                with SessionLocal() as db:
+                    # 1. Look for dedicated "google_drive" storage config
+                    cfg = db.query(ChannelConfig).filter(
+                        ChannelConfig.key == "google_drive",
+                        ChannelConfig.is_active == True,
+                    ).first()
+
+                    # 2. Fallback to channel-specific config
+                    if not (cfg and cfg.refresh_token) and channel:
+                        cfg = db.query(ChannelConfig).filter(
+                            ChannelConfig.key == channel,
+                            ChannelConfig.is_active == True,
+                        ).first()
+
+                    if cfg and cfg.refresh_token:
+                        refresh_token = cfg.refresh_token
+                        client_id = cfg.client_id or client_id
+                        client_secret = cfg.client_secret or client_secret
+                        source = f"channel_configs({cfg.key})"
+
+            if refresh_token and client_id and client_secret:
+                creds = Credentials(
+                    token=None,
+                    refresh_token=refresh_token,
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    scopes=_DRIVE_SCOPES,
+                )
+                logger.info("Using user OAuth credentials for Drive (source=%s)", source)
+                return build("drive", "v3", credentials=creds, cache_discovery=False)
         except Exception as exc:
             logger.debug("User OAuth Drive service initialization skipped: %s", exc)
 

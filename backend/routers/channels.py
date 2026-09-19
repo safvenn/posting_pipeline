@@ -144,8 +144,7 @@ def get_global_auth_url(request: Request, channel: Optional[str] = None, db: Ses
     scopes = (
         "https://www.googleapis.com/auth/youtube "
         "https://www.googleapis.com/auth/youtube.upload "
-        "https://www.googleapis.com/auth/youtube.force-ssl "
-        "https://www.googleapis.com/auth/drive.file"
+        "https://www.googleapis.com/auth/youtube.force-ssl"
     )
     
     state = channel or f"new_{uuid.uuid4().hex[:6]}"
@@ -157,6 +156,34 @@ def get_global_auth_url(request: Request, channel: Optional[str] = None, db: Ses
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
+    }
+    url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
+    return {"auth_url": url, "redirect_uri": redirect_uri}
+
+
+@router.get("/drive/auth-url")
+def get_drive_auth_url(request: Request):
+    """
+    Generate Google OAuth consent URL specifically for Google Drive storage.
+    Google requires Drive scopes to be authorized separately from YouTube scopes.
+    """
+    client_id, _ = settings.get_google_oauth_credentials()
+    if not client_id:
+        raise HTTPException(
+            status_code=400,
+            detail="GOOGLE_CLIENT_ID not configured in .env. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."
+        )
+
+    redirect_uri = _get_redirect_uri(request)
+    scope = "https://www.googleapis.com/auth/drive.file"
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": scope,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": "google_drive",
     }
     url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
     return {"auth_url": url, "redirect_uri": redirect_uri}
@@ -176,8 +203,9 @@ def oauth_callback(code: str, state: str, request: Request, db: Session = Depend
     """
     Handle Google OAuth callback:
     1. Exchange authorization code for refresh_token using shared credentials
-    2. Query YouTube API to discover channel title and channel ID automatically
-    3. Save / update ChannelConfig in DB with the refresh_token
+    2. If state == 'google_drive', save as Google Drive Storage credentials
+    3. Otherwise query YouTube API to discover channel title and channel ID automatically
+    4. Save / update ChannelConfig in DB with the refresh_token
     """
     client_id, client_secret = settings.get_google_oauth_credentials()
     if not (client_id and client_secret):
@@ -207,6 +235,34 @@ def oauth_callback(code: str, state: str, request: Request, db: Session = Depend
                 refresh_token = existing.refresh_token
             else:
                 raise HTTPException(status_code=400, detail="No refresh token returned. Try prompt=consent.")
+
+    # Dedicated handler for Google Drive storage authorization
+    if state == "google_drive":
+        cfg = db.query(ChannelConfig).filter(ChannelConfig.key == "google_drive").first()
+        if cfg:
+            cfg.refresh_token = refresh_token
+            cfg.display_name = "Google Drive Storage"
+            cfg.is_active = True
+        else:
+            cfg = ChannelConfig(
+                key="google_drive",
+                display_name="Google Drive Storage",
+                client_id=client_id,
+                client_secret=client_secret,
+                refresh_token=refresh_token,
+                is_active=True,
+            )
+            db.add(cfg)
+        db.commit()
+        _invalidate_all_channel_caches("google_drive")
+        return HTMLResponse(
+            "<html><body style='font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:#e2e8f0;'>"
+            "<h2 style='color:#22c55e;'>✅ Google Drive Connected!</h2>"
+            "<p style='color:#94a3b8;'>Your personal Google Drive is now authorized for pipeline video uploads.</p>"
+            "<p style='color:#64748b;font-size:12px;'>Closing this window and refreshing...</p>"
+            "<script>window.opener && window.opener.location.reload(); setTimeout(() => window.close(), 2000);</script>"
+            "</body></html>"
+        )
 
     # Auto-discover channel details from YouTube API
     channel_title = state

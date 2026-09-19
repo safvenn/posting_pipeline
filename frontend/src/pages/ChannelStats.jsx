@@ -18,6 +18,7 @@ import {
   Send,
   Eye,
   EyeOff,
+  HardDrive,
 } from 'lucide-react'
 import InstagramIcon from '../components/InstagramIcon'
 import { useChannelsQuery } from '../hooks/useChannels'
@@ -299,6 +300,17 @@ export default function ChannelStats() {
     }
   }
 
+  async function handleConnectDrive() {
+    try {
+      const res = await client.get('/channels/drive/auth-url')
+      if (res.data?.auth_url) {
+        window.open(res.data.auth_url, '_blank', 'width=600,height=700')
+      }
+    } catch (e) {
+      alert('Failed to get Google Drive auth URL: ' + (e.response?.data?.detail || e.message))
+    }
+  }
+
   async function handleConnectSpecific(channelKey) {
     try {
       const res = await client.get(`/channels/${channelKey}/auth-url`)
@@ -435,7 +447,15 @@ export default function ChannelStats() {
             onClick={handleConnectGlobal}
           >
             <Key size={14} />
-            <span>Connect with Google</span>
+            <span>Connect YouTube Channel</span>
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={handleConnectDrive}
+            title="Connect personal Google Drive for video archiving"
+          >
+            <HardDrive size={14} />
+            <span>Connect Google Drive</span>
           </button>
           <button className="btn btn-secondary" onClick={load} disabled={loading} id="channels-refresh">
             <RefreshCw size={14} className={loading ? 'spinner' : ''} />

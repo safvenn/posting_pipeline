@@ -113,6 +113,7 @@ class Settings(BaseSettings):
     # Obtain the folder ID from the Drive URL: drive.google.com/drive/folders/<ID>
     # Service account must have Editor access on this folder.
     google_drive_indian_kitchen_folder_id: str = ""
+    google_drive_refresh_token: str = ""
 
     # Upload / download size limits (MB)
     max_upload_size_mb: int = 500
