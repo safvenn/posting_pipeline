@@ -665,19 +665,61 @@ def get_post_video(post_id: int, db: Session = Depends(get_db)):
     )
 
 
+def _publish_instagram_reel_background(post_id: int):
+    from backend.database import SessionLocal
+    from backend.services.instagram import publish_reel_for_post
+    db = SessionLocal()
+    try:
+        post = db.get(Post, post_id)
+        if not post:
+            return
+        publish_reel_for_post(post, db)
+    except Exception:
+        logger.exception("[Instagram] Error in background Instagram publish for post %s", post_id)
+    finally:
+        db.close()
+
+
 @router.post("/{post_id}/instagram/publish")
-def publish_instagram_post(post_id: int, db: Session = Depends(get_db)):
+def publish_instagram_post(
+    post_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     """Trigger or retry Instagram Reels publishing for a post."""
     post = db.get(Post, post_id)
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
 
-    from backend.services.instagram import publish_reel_for_post
-    res = publish_reel_for_post(post, db)
-    if not res.get("success"):
+    from backend.models import ChannelConfig
+    ch = db.query(ChannelConfig).filter(ChannelConfig.key == post.channel).first()
+    if not ch or not ch.instagram_enabled:
         raise HTTPException(
             status_code=400,
-            detail=res.get("error") or res.get("reason") or "Failed to publish Instagram Reel.",
+            detail=f"Instagram publishing is not enabled for channel '{post.channel}'.",
         )
-    return res
+    if not ch.instagram_account_id or not ch.instagram_access_token:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Instagram credentials are not configured for channel '{post.channel}'.",
+        )
+
+    # Fail fast if video file is missing on disk AND Drive
+    video_p = Path(post.clean_video_path) if post.clean_video_path else None
+    if not (video_p and video_p.exists()):
+        video_p = Path(post.video_path) if post.video_path else None
+    if not (video_p and video_p.exists()):
+        if not post.clean_drive_file_id and not post.drive_file_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Video file for post #{post.id} is no longer available on disk or Google Drive. Please re-upload the video.",
+            )
+
+    post.instagram_status = "pending"
+    post.instagram_error = None
+    db.commit()
+
+    background_tasks.add_task(_publish_instagram_reel_background, post.id)
+    return {"status": "pending", "message": "Instagram Reel publishing started."}
+
 
