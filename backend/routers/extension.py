@@ -629,8 +629,7 @@ class AutoQueueResponse(BaseModel):
 def get_auto_queue(
     channel: str = Query(default="the_indian_kitchen", description="Channel key"),
     limit: int = Query(default=10, ge=1, le=50),
-    x_api_key: Optional[str] = Header(default=None),
-    authorization: Optional[str] = Header(default=None),
+    _auth: None = Depends(_verify_extension_auth),
 ):
     """
     Return Google Sheet rows that have a prompt but have NOT been auto-generated yet.
@@ -640,7 +639,6 @@ def get_auto_queue(
       - 'auto_status' column is empty, 'pending', or not present at all
       - 'scheduled' column is empty (not yet uploaded)
     """
-    _require_api_key(x_api_key, authorization)
 
     try:
         from backend.services.sheets import get_all_rows
@@ -703,8 +701,7 @@ class MarkAutoStatusResponse(BaseModel):
 )
 def mark_auto_status(
     payload: MarkAutoStatusRequest,
-    x_api_key: Optional[str] = Header(default=None),
-    authorization: Optional[str] = Header(default=None),
+    _auth: None = Depends(_verify_extension_auth),
 ):
     """
     Write the automation status string back to the 'auto_status' column
@@ -713,7 +710,6 @@ def mark_auto_status(
 
     Valid statuses: pending | generating | done | failed | uploaded
     """
-    _require_api_key(x_api_key, authorization)
 
     valid_statuses = {"pending", "generating", "done", "failed", "uploaded"}
     if payload.status not in valid_statuses:
