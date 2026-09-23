@@ -9,6 +9,7 @@ runner ensures:
 
 Priority order when picking the next post to process:
   queued   → watermark removal (clean)      [slow: SSH 2-5 min, background thread]
+             OR skip to cleaned if clean_watermark_enabled=False
   cleaned  → Gemini enrichment + schedule   [fast: 5-15s, in-tick]
   scheduled (no video_id) → YouTube upload  [slow: 1-3 min, background thread]
   uploaded → first comment                  [fast]
@@ -44,12 +45,57 @@ _uploading: set[int] = set()
 _uploading_lock = threading.Lock()
 
 
+def _is_watermark_cleaning_enabled() -> bool:
+    """Return True if watermark cleaning is enabled in app settings.
+
+    Reads from the database each tick so toggle changes take effect on the next
+    scheduler run without requiring a server restart.
+    Defaults to True if the row is missing or an error occurs.
+    """
+    try:
+        from backend.database import SessionLocal
+        from backend.routers.settings import get_clean_watermark_enabled
+        with SessionLocal() as db:
+            return get_clean_watermark_enabled(db)
+    except Exception:
+        logger.exception("[Queue] Failed to read clean_watermark_enabled setting, defaulting to True")
+        return True
+
+
+def _skip_cleaning_for_post(post_id: int) -> None:
+    """Advance a queued post directly to 'cleaned' status, bypassing gwr SSH.
+
+    Used when clean_watermark_enabled is False — the original video is used as-is
+    for enrichment and YouTube upload (no Gemini watermark removal performed).
+    """
+    try:
+        from backend.database import SessionLocal
+        from backend.models import Post
+        with SessionLocal() as db:
+            post = db.query(Post).filter(Post.id == post_id, Post.status == "queued").first()
+            if post is None:
+                logger.warning("[Queue] Skip-cleaning: post %s not found or no longer queued", post_id)
+                return
+            # Re-use the original video path as the cleaned path so the enrich step
+            # has a valid file to work with.
+            post.clean_video_path = post.clean_video_path or post.video_path
+            post.status = "cleaned"
+            db.commit()
+            logger.info(
+                "[Queue] Post %s: watermark cleaning SKIPPED (toggle OFF) — advanced to cleaned",
+                post_id,
+            )
+    except Exception:
+        logger.exception("[Queue] Error skipping cleaning for post %s", post_id)
+
+
 def run_serial_queue() -> None:
     """
     Single APScheduler entry point — processes exactly ONE step per scheduler tick.
 
     Priority order (re-ordered to prevent queued starvation):
       1. queued  → watermark cleaning (background SSH thread)
+                   OR direct-skip to cleaned if clean_watermark_enabled=False
       2. cleaned → Gemini enrich + schedule slot (fast, in-tick)
       3. scheduled (no video_id) → YouTube upload (background thread)
       4. uploaded/scheduled + video_id → first comment
@@ -64,11 +110,19 @@ def run_serial_queue() -> None:
         return
 
     try:
-        # Priority 1: queued → cleaning (spawns background SSH thread, returns fast)
+        # Priority 1: queued → cleaning (or direct-skip if toggle is OFF)
         post_id = get_next_cleanable_post_id()
         if post_id:
-            logger.info("[Queue] Post %s → cleaning (background SSH)", post_id)
-            clean_one_post(post_id)
+            cleaning_enabled = _is_watermark_cleaning_enabled()
+            if cleaning_enabled:
+                logger.info("[Queue] Post %s → cleaning (background SSH)", post_id)
+                clean_one_post(post_id)
+            else:
+                logger.info(
+                    "[Queue] Post %s → skip cleaning (toggle OFF), advancing to cleaned",
+                    post_id,
+                )
+                _skip_cleaning_for_post(post_id)
             return
 
         # Priority 2: cleaned → enrich + schedule (fast Gemini call, in-tick)

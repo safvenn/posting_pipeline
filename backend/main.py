@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.config import settings
 from backend.database import Base, engine
 from backend.routers import channels, posts, schedule
+from backend.routers.settings import router as settings_router
 from backend.routers.asmr import router as asmr_router, food_router as asmr_food_router
 from backend.routers.extension import router as extension_router
 from backend.routers.auth import router as auth_router
@@ -313,8 +314,9 @@ def create_app() -> FastAPI:
     app.include_router(posts.router,    dependencies=[Depends(require_api_key)])
     app.include_router(channels.router, dependencies=[Depends(require_api_key)])
     app.include_router(schedule.router, dependencies=[Depends(require_api_key)])
-    app.include_router(asmr_router,     dependencies=[Depends(require_api_key)])
-    app.include_router(asmr_food_router, dependencies=[Depends(require_api_key)])
+    app.include_router(asmr_router,      dependencies=[Depends(require_api_key)])
+    app.include_router(asmr_food_router,  dependencies=[Depends(require_api_key)])
+    app.include_router(settings_router,   dependencies=[Depends(require_api_key)])
 
     # Public health endpoint — no auth required
     @app.get("/api/health")

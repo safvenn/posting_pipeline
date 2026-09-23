@@ -261,3 +261,30 @@ class ChannelConfig(Base):
 
     def __repr__(self) -> str:
         return f"<ChannelConfig id={self.id} key={self.key!r} name={self.display_name!r}>"
+
+
+# --------------------------------------------------------------------------- #
+# App-wide Settings (key-value toggles)                                        #
+# --------------------------------------------------------------------------- #
+
+class AppSettings(Base):
+    """Global pipeline settings stored as key-value pairs.
+
+    Known keys:
+      clean_watermark_enabled  — 'true' | 'false'
+        When 'false', newly queued posts skip watermark cleaning (gwr SSH step)
+        and go directly to the enrichment/schedule step instead.
+    """
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, default="true")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    def __repr__(self) -> str:
+        return f"<AppSettings key={self.key!r} value={self.value!r}>"

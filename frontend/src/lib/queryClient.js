@@ -58,6 +58,9 @@ export const queryKeys = {
   asmrRuns: () => ['asmrRuns'],
   asmrFoods: () => ['asmrFoods'],
   asmrContent: () => ['asmrContent'],
+
+  // App Settings
+  settings: () => ['settings'],
 }
 
 // ─── Stale Time Constants ───────────────────────────────────────────────────

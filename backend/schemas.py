@@ -313,3 +313,20 @@ class ASMRContentResult(BaseModel):
     tags: List[str]
     hashtags: List[str]
     video_prompt: str
+
+
+# --------------------------------------------------------------------------- #
+# App Settings schemas                                                          #
+# --------------------------------------------------------------------------- #
+
+class AppSettingsRead(BaseModel):
+    """Response shape for GET /api/settings."""
+    clean_watermark_enabled: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AppSettingsUpdate(BaseModel):
+    """Request body for PATCH /api/settings."""
+    clean_watermark_enabled: bool
+

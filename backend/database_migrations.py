@@ -92,6 +92,42 @@ def run_migrations():
                     logger.info("Adding instagram_username column to channel_configs table")
                     conn.execute(text("ALTER TABLE channel_configs ADD COLUMN instagram_username VARCHAR(128)"))
 
+        # 3. Create app_settings table and seed defaults
+        if not inspector.has_table("app_settings"):
+            logger.info("Creating app_settings table")
+            with engine.begin() as conn:
+                if engine.dialect.name == "sqlite":
+                    conn.execute(text(
+                        "CREATE TABLE app_settings ("
+                        "  key VARCHAR(64) PRIMARY KEY, "
+                        "  value TEXT NOT NULL DEFAULT 'true', "
+                        "  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+                        ")"
+                    ))
+                else:
+                    conn.execute(text(
+                        "CREATE TABLE IF NOT EXISTS app_settings ("
+                        "  key VARCHAR(64) PRIMARY KEY, "
+                        "  value TEXT NOT NULL DEFAULT 'true', "
+                        "  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()"
+                        ")"
+                    ))
+            logger.info("app_settings table created")
+
+        # Seed default settings (idempotent — no-op if row already exists)
+        with engine.begin() as conn:
+            if engine.dialect.name == "sqlite":
+                conn.execute(text(
+                    "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('clean_watermark_enabled', 'true')"
+                ))
+            else:
+                conn.execute(text(
+                    "INSERT INTO app_settings (key, value) VALUES ('clean_watermark_enabled', 'true') "
+                    "ON CONFLICT (key) DO NOTHING"
+                ))
+        logger.info("app_settings defaults seeded")
+
         logger.info("Database schema migration check completed.")
     except Exception as exc:
         logger.warning("Database migration check encountered error: %s", exc)
+

@@ -10,6 +10,7 @@ const ChannelStats   = lazy(() => import('./pages/ChannelStats'))
 const FailedJobs     = lazy(() => import('./pages/FailedJobs'))
 const PostDetail     = lazy(() => import('./pages/PostDetail'))
 const ASMRWorkflow   = lazy(() => import('./pages/ASMRWorkflow'))
+const Settings       = lazy(() => import('./pages/Settings'))
 const NotFound       = lazy(() => import('./pages/NotFound'))
 
 function PageLoader() {
@@ -40,8 +41,9 @@ export default function App() {
             <Route path="/channels" element={<ChannelStats />} />
             <Route path="/failed"   element={<FailedJobs />} />
             <Route path="/post/:id" element={<PostDetail />} />
-            <Route path="/asmr"     element={<ASMRWorkflow />} />
-            <Route path="*"         element={<NotFound />} />
+            <Route path="/asmr"      element={<ASMRWorkflow />} />
+            <Route path="/settings"  element={<Settings />} />
+            <Route path="*"          element={<NotFound />} />
           </Routes>
         </Suspense>
       </Layout>

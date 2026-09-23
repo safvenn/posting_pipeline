@@ -11,6 +11,7 @@ import {
   Layers,
   Clock,
   Radio,
+  Settings2,
   X,
 } from 'lucide-react'
 
@@ -21,9 +22,10 @@ const NAV_MAIN = [
 ]
 
 const NAV_AUTOMATION = [
-  { to: '/asmr',     icon: Sparkles,        label: 'ASMR Studio' },
-  { to: '/channels', icon: Tv2,             label: 'Channels' },
-  { to: '/failed',   icon: AlertTriangle,   label: 'Failed Jobs' },
+  { to: '/asmr',     icon: Sparkles,   label: 'ASMR Studio' },
+  { to: '/channels', icon: Tv2,        label: 'Channels' },
+  { to: '/failed',   icon: AlertTriangle, label: 'Failed Jobs' },
+  { to: '/settings', icon: Settings2,  label: 'Settings' },
 ]
 
 export default function Sidebar({ isOpen, onClose }) {
