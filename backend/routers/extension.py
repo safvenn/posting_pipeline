@@ -116,6 +116,15 @@ def _verify_extension_auth(
             detail="Invalid or missing API key for extension ingest.",
         )
 
+
+def _require_api_key(
+    x_api_key: Optional[str] = None,
+    authorization: Optional[str] = None,
+) -> None:
+    """Helper for auto-queue endpoints."""
+    _verify_extension_auth(authorization=authorization, x_api_key=x_api_key)
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
