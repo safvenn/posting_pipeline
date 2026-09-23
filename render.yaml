@@ -56,6 +56,16 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+      # ---------------------------------------------------------------------------
+      # fal.ai — Cloud AI Video Generation (laptop-off automation)
+      # Get your key at https://fal.ai → API Keys
+      # ---------------------------------------------------------------------------
+      - key: FAL_API_KEY
+        sync: false
+      - key: FAL_DEFAULT_MODEL
+        value: "kling"
+      - key: FAL_MAX_PER_RUN
+        value: "5"
 
 # -----------------------------------------------------------------------------
 # Managed PostgreSQL Database

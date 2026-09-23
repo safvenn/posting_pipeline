@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     # Optional LLM
     anthropic_api_key: Optional[str] = None
 
+    # fal.ai — AI Video Generation (for cloud auto-generate, no browser needed)
+    # Get your API key at https://fal.ai — set FAL_API_KEY in Render env vars
+    fal_api_key: str = ""
+    # Default video model: kling | veo3 | seedance
+    fal_default_model: str = "kling"
+    # Max videos per daily auto-generate run (cost guard)
+    fal_max_per_run: int = 5
+
     # Telegram notifications
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

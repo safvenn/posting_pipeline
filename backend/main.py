@@ -22,6 +22,7 @@ from backend.routers.auth import router as auth_router
 from backend.jobs.job_queue import run_serial_queue
 from backend.jobs.asmr_workflow_job import run_asmr_workflow_job
 from backend.jobs.instagram_job import run_instagram_publish_job
+from backend.jobs.auto_generate_job import run_auto_generate, trigger_now, get_last_run_result
 
 # --------------------------------------------------------------------------- #
 # Logging                                                                       #
@@ -74,6 +75,17 @@ def _configure_scheduler() -> None:
         replace_existing=True,
         misfire_grace_time=300,
     )
+    # Auto-Generate Job (fal.ai) — only registered if FAL_API_KEY is configured
+    if getattr(settings, "fal_api_key", "").strip():
+        _scheduler.add_job(
+            run_auto_generate,
+            trigger=CronTrigger(hour=9, minute=5, timezone="Asia/Kolkata"),
+            id="auto_generate_job",
+            name="Auto-Generate Videos (fal.ai)",
+            max_instances=1,
+            replace_existing=True,
+            misfire_grace_time=600,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -312,6 +324,30 @@ def create_app() -> FastAPI:
             for j in _scheduler.get_jobs()
         ]
         return {"status": "ok", "scheduler_jobs": jobs}
+
+    # ---- Auto-Generate endpoints — no api-key on GET status, key on POST trigger ----
+    @app.get("/api/auto/status")
+    def auto_status():
+        """Get auto-generate job status, last run, and next scheduled run."""
+        from backend.services.fal_service import check_fal_configured
+        next_run = None
+        job = _scheduler.get_job("auto_generate_job")
+        if job and job.next_run_time:
+            next_run = job.next_run_time.isoformat()
+        return {
+            "fal_configured": check_fal_configured(),
+            "fal_model": settings.fal_default_model,
+            "schedule": "Daily at 9:05 AM IST",
+            "next_run": next_run,
+            "last_run": get_last_run_result(),
+        }
+
+    @app.post("/api/auto/trigger", dependencies=[Depends(require_api_key)])
+    def auto_trigger(channel: str = "all", limit: int = 1):
+        """Manually trigger auto-generate right now (for testing). Requires API key."""
+        ch = None if channel == "all" else channel
+        result = trigger_now(channel=ch, limit=limit)
+        return result
 
     return app
 

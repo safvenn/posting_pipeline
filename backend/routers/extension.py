@@ -591,3 +591,154 @@ async def ingest_from_extension(
         scheduled_at=scheduled_at_str,
         sheet_row_id=clean_row_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Auto-Generation Queue Endpoints (Daily 9 AM Scheduler Support)
+# ---------------------------------------------------------------------------
+
+class AutoQueueRow(BaseModel):
+    """A single prompt queue row returned to the Chrome extension."""
+    id: str
+    prompt: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[str] = None
+
+
+class AutoQueueResponse(BaseModel):
+    rows: list[AutoQueueRow]
+    total: int
+    channel: str
+
+
+@router.get(
+    "/auto-queue",
+    response_model=AutoQueueResponse,
+    summary="Get pending auto-generation prompts from Google Sheet",
+)
+def get_auto_queue(
+    channel: str = Query(default="the_indian_kitchen", description="Channel key"),
+    limit: int = Query(default=10, ge=1, le=50),
+    x_api_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Return Google Sheet rows that have a prompt but have NOT been auto-generated yet.
+
+    A row is considered pending when:
+      - 'prompt' column is non-empty
+      - 'auto_status' column is empty, 'pending', or not present at all
+      - 'scheduled' column is empty (not yet uploaded)
+    """
+    _require_api_key(x_api_key, authorization)
+
+    try:
+        from backend.services.sheets import get_all_rows
+        all_rows = get_all_rows(channel)
+    except Exception as exc:
+        logger.error("auto-queue: failed to read sheet for channel %s: %s", channel, exc)
+        raise HTTPException(status_code=503, detail=f"Could not read Google Sheet: {exc}")
+
+    pending: list[AutoQueueRow] = []
+    for row in all_rows:
+        prompt_val = str(row.get("prompt", "") or "").strip()
+        if not prompt_val:
+            continue  # Skip rows with no prompt
+
+        auto_status = str(row.get("auto_status", "") or row.get("auto status", "")).strip().lower()
+        scheduled = str(row.get("scheduled", "") or "").strip()
+        upload_id = str(row.get("upload id", "") or row.get("upload_id", "")).strip()
+
+        # Skip rows already processing, done, or already uploaded
+        if auto_status in ("generating", "done", "uploaded"):
+            continue
+        if scheduled or upload_id:
+            continue  # Already processed
+
+        row_id = str(row.get("id", "")).strip()
+        if not row_id:
+            continue
+
+        pending.append(AutoQueueRow(
+            id=row_id,
+            prompt=prompt_val,
+            title=str(row.get("title", "") or "").strip() or None,
+            description=str(row.get("description", "") or "").strip() or None,
+            tags=str(row.get("tags", "") or "").strip() or None,
+        ))
+
+        if len(pending) >= limit:
+            break
+
+    logger.info("auto-queue: channel=%s found %d pending rows", channel, len(pending))
+    return AutoQueueResponse(rows=pending, total=len(pending), channel=channel)
+
+
+class MarkAutoStatusRequest(BaseModel):
+    """Request body for marking an auto-generation row status."""
+    channel: str
+    row_id: str
+    status: str  # pending | generating | done | failed | uploaded
+
+
+class MarkAutoStatusResponse(BaseModel):
+    success: bool
+    message: str
+
+
+@router.post(
+    "/mark-auto-status",
+    response_model=MarkAutoStatusResponse,
+    summary="Write auto_status back to Google Sheet row",
+)
+def mark_auto_status(
+    payload: MarkAutoStatusRequest,
+    x_api_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Write the automation status string back to the 'auto_status' column
+    in the Google Sheet. Called by the Chrome extension background service
+    worker as each stage of auto-generation completes.
+
+    Valid statuses: pending | generating | done | failed | uploaded
+    """
+    _require_api_key(x_api_key, authorization)
+
+    valid_statuses = {"pending", "generating", "done", "failed", "uploaded"}
+    if payload.status not in valid_statuses:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid status '{payload.status}'. Must be one of: {valid_statuses}",
+        )
+
+    try:
+        from backend.services.sheets import update_row_fields
+        success = update_row_fields(
+            channel=payload.channel,
+            row_id=payload.row_id,
+            fields={"auto_status": payload.status},
+        )
+    except Exception as exc:
+        logger.error(
+            "mark-auto-status: failed to update sheet row %s channel %s: %s",
+            payload.row_id, payload.channel, exc,
+        )
+        raise HTTPException(status_code=503, detail=f"Could not update Google Sheet: {exc}")
+
+    if success:
+        logger.info(
+            "mark-auto-status: channel=%s row=%s → %s",
+            payload.channel, payload.row_id, payload.status,
+        )
+        return MarkAutoStatusResponse(
+            success=True,
+            message=f"Row #{payload.row_id} marked as '{payload.status}'",
+        )
+    else:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Row #{payload.row_id} not found in sheet for channel '{payload.channel}'",
+        )
+
