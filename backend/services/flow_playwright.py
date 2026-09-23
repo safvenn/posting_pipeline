@@ -208,6 +208,8 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
             if (
                 "video/" in ct
                 or url.endswith(".mp4")
+                or "flow-content.google/video" in url
+                or "googlevideo.com/videoplayback" in url
                 or (
                     "storage.googleapis.com" in url
                     and ("mp4" in url or "video" in url.lower())
@@ -421,14 +423,18 @@ def _wait_for_video(page: Page, captured_urls: list[str]) -> str:
         except Exception:
             pass
 
-        # 3. Check for clickable video cards
+        # 3. Check for clickable video cards and click to activate playback stream
         try:
             card = page.locator(
-                '[role="button"]:has(video), div:has(> video), [data-item-type="video"]'
+                'button.thumbnail-button, [role="button"]:has(video), div:has(> video), [data-item-type="video"]'
             ).first
             if card.count() > 0 and card.is_visible():
                 card.click()
                 time.sleep(2)
+            else:
+                # Click candidate canvas coordinates where recent generated videos sit
+                page.mouse.click(590, 240)
+                time.sleep(1)
         except Exception:
             pass
 
@@ -513,6 +519,8 @@ def _validate_video_url(url: str) -> None:
     """
     allowed_patterns = [
         r"^https://storage\.googleapis\.com/",
+        r"^https://flow-content\.google/",
+        r"^https://[^/]+\.googlevideo\.com/",
         r"^https://[^/]+\.googleusercontent\.com/",
         r"^https://[^/]+\.google\.com/",
         r"^https://[^/]+\.gstatic\.com/",
