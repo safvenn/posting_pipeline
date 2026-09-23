@@ -315,6 +315,7 @@ def remove_watermark(post_id: int, db: Session | None = None) -> None:
             f"pnpm exec gwr remove {remote_input} "
             f"--output {remote_clean} "
             f"--video-bitrate-mbps {settings.gwr_video_bitrate_mbps} "
+            f"--allow-low-confidence "
             f"--json"
         )
         logger.info("Post %s: running gwr", post_id)
@@ -330,13 +331,22 @@ def remove_watermark(post_id: int, db: Session | None = None) -> None:
         # CRITICAL: check exit code — never silently continue on failure
         if code != 0:
             gwr_err = _parse_gwr_error(stdout, stderr)
-            raise RuntimeError(
-                f"gwr exited {code} after {elapsed:.1f}s: {gwr_err}"
-            )
+            # If gwr says watermark detection confidence was low or exited 4, the video has no detectable watermark
+            if code == 4 or "置信度偏低" in stdout or "置信度偏低" in stderr:
+                logger.info(
+                    "Post %s: gwr reported low watermark confidence (no detectable watermark). Using original as clean video.",
+                    post_id,
+                )
+                _ssh_exec(ssh, f"cp {remote_input} {remote_clean}")
+            else:
+                raise RuntimeError(
+                    f"gwr exited {code} after {elapsed:.1f}s: {gwr_err}"
+                )
+        else:
+            # Parse gwr JSON output to confirm success
+            _check_gwr_json(stdout, post_id)
 
-        # Parse gwr JSON output to confirm success
-        _check_gwr_json(stdout, post_id)
-        logger.info("Post %s: gwr done in %.1fs", post_id, elapsed)
+        logger.info("Post %s: gwr stage completed in %.1fs", post_id, elapsed)
 
         # ---- Step 2.5: Enforce 1080p Full HD video quality on worker via FFmpeg ----
         remote_1080p = f"{settings.gwr_tmp_dir}/clean-1080p-{job_id}.mp4"

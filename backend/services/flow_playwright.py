@@ -59,7 +59,7 @@ VIDEO_READY_TIMEOUT_MS = 300_000   # 5 min — video generation can take a while
 DOWNLOAD_TIMEOUT_MS = 120_000
 
 # Safety: maximum prompt length to prevent DOM injection / prompt stuffing
-MAX_PROMPT_LEN = 500
+MAX_PROMPT_LEN = 4000
 
 
 class FlowError(Exception):
@@ -197,6 +197,30 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
     """Drive the full Google Flow session: open → type → generate → download."""
     page = ctx.new_page()
 
+    # Capture video network responses early
+    captured_video_urls: list[str] = []
+
+    def on_response(response):
+        """Capture generated video asset URLs from network traffic."""
+        try:
+            ct = response.headers.get("content-type", "")
+            url = response.url
+            if (
+                "video/" in ct
+                or url.endswith(".mp4")
+                or (
+                    "storage.googleapis.com" in url
+                    and ("mp4" in url or "video" in url.lower())
+                )
+            ):
+                if url not in captured_video_urls:
+                    logger.info("[Flow] 🎬 Video response detected: %s", url[:80])
+                    captured_video_urls.append(url)
+        except Exception:
+            pass
+
+    page.on("response", on_response)
+
     # ---- 1. Navigate to Flow ----
     logger.info("[Flow] Navigating to %s", FLOW_URL)
     page.goto(FLOW_URL, timeout=GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
@@ -204,30 +228,83 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
     # ---- 2. Check if Google redirected us to login ----
     _assert_not_login_page(page)
 
-    # ---- 3. Wait for page to be fully interactive ----
+    # ---- 3. Dismiss cookie consent banner if present ----
     try:
-        page.wait_for_load_state("networkidle", timeout=PAGE_LOAD_TIMEOUT_MS)
-    except PWTimeoutError:
-        # networkidle can timeout on SPA pages with background polling — acceptable
-        logger.warning("[Flow] networkidle timeout (acceptable on SPA) — continuing")
+        consent = page.locator('button:has-text("OK, got it")').first
+        consent.wait_for(state="visible", timeout=4000)
+        consent.click()
+        logger.info("[Flow] Dismissed cookie consent banner.")
+        time.sleep(1)
+    except Exception as exc:
+        logger.debug("[Flow] Cookie banner not shown: %s", exc)
 
-    # ---- 4. Find and fill the prompt textarea ----
+    # ---- 4. Enter studio if on landing page ----
+    try:
+        start_btn = page.locator(
+            'button:has-text("Start Creating"), a:has-text("Start Creating"), a:has-text("Open project")'
+        ).first
+        start_btn.wait_for(state="visible", timeout=8000)
+        logger.info("[Flow] Entering studio canvas...")
+        start_btn.click()
+        time.sleep(5)
+    except Exception as exc:
+        logger.info("[Flow] Studio button not shown or already in studio: %s", exc)
+
+    # ---- 4.5. Ensure Video Mode and 9:16 Aspect Ratio are selected ----
+    try:
+        model_btn = page.locator(
+            'button:has-text("Banana"), button:has-text("Nano"), [role="button"]:has-text("Banana")'
+        )
+        if model_btn.count() > 0:
+            logger.info("[Flow] Opening model settings menu...")
+            model_btn.first.click()
+            time.sleep(1)
+
+        video_tab = page.locator('button:has-text("Video"), [role="tab"]:has-text("Video")').first
+        if video_tab.count() > 0:
+            logger.info("[Flow] Selecting Video tab...")
+            video_tab.click()
+            time.sleep(1)
+
+        ar_btn = page.locator('button:has-text("9:16"), [role="button"]:has-text("9:16")').first
+        if ar_btn.count() > 0:
+            logger.info("[Flow] Selecting 9:16 vertical aspect ratio...")
+            ar_btn.click()
+            time.sleep(1)
+
+        page.keyboard.press("Escape")
+        time.sleep(1)
+    except Exception as exc:
+        logger.warning("[Flow] Note during video mode configuration: %s", exc)
+
+    # ---- 5. Find and fill the prompt editor ----
     prompt_el = _find_prompt_input(page)
-    logger.info("[Flow] Found prompt input. Typing prompt…")
+    logger.info("[Flow] Found prompt editor. Entering prompt...")
     prompt_el.click()
-    prompt_el.fill("")            # clear any existing text
-    prompt_el.type(prompt, delay=40)  # human-like typing speed
+    time.sleep(0.5)
+    try:
+        page.keyboard.insert_text(prompt)
+    except Exception:
+        prompt_el.fill(prompt)
 
-    # ---- 5. Click Generate ----
+    time.sleep(1)
+
+    # ---- 6. Click Generate (arrow_forward icon or button) ----
     generate_btn = _find_generate_button(page)
-    logger.info("[Flow] Clicking Generate…")
-    generate_btn.click()
+    logger.info("[Flow] Triggering video generation...")
+    if generate_btn:
+        generate_btn.click()
+    else:
+        logger.info("[Flow] Pressing Enter key...")
+        page.keyboard.press("Enter")
 
-    # ---- 6. Wait for video to appear ----
+    time.sleep(5)
+
+    # ---- 7. Wait for video to appear ----
     logger.info("[Flow] Waiting for video generation (up to %ds)…", VIDEO_READY_TIMEOUT_MS // 1000)
-    video_url = _wait_for_video(page)
+    video_url = _wait_for_video(page, captured_video_urls)
 
-    # ---- 7. Download video ----
+    # ---- 8. Download video ----
     filename = f"flow_{uuid.uuid4().hex[:10]}.mp4"
     dest = dest_dir / filename
     _download_video_file(ctx, video_url, dest)
@@ -248,17 +325,15 @@ def _assert_not_login_page(page: Page) -> None:
 
 def _find_prompt_input(page: Page):
     """
-    Find the prompt textarea inside Google Flow's Shadow DOM.
-
-    Strategy (e2e-testing skill: prefer semantic locators > CSS > XPath):
-    1. Try common aria/placeholder selectors
-    2. Fall back to BFS through Shadow DOM (same approach as auto_generate.js)
+    Find the prompt textarea/ProseMirror editor inside Google Flow.
     """
     selectors = [
+        ".ProseMirror",
+        "div[contenteditable='true']",
+        "[contenteditable='true']",
+        "textarea[placeholder*='create' i]",
         "textarea[placeholder*='prompt' i]",
         "textarea[aria-label*='prompt' i]",
-        "textarea[placeholder*='descri' i]",
-        "[contenteditable='true'][aria-label*='prompt' i]",
         "textarea",
     ]
 
@@ -273,32 +348,16 @@ def _find_prompt_input(page: Page):
 
     # BFS fallback — pierce Shadow DOM via JS
     logger.debug("[Flow] Standard selectors failed, trying Shadow DOM BFS…")
-    handle = page.evaluate_handle("""() => {
-        function bfs(root) {
-            const queue = [root];
-            while (queue.length) {
-                const node = queue.shift();
-                if (!node) continue;
-                if (node.nodeType === 1) {
-                    const tag = node.tagName?.toLowerCase();
-                    const role = node.getAttribute?.('role') || '';
-                    const ph = node.getAttribute?.('placeholder') || '';
-                    if (tag === 'textarea' || (tag === 'div' && node.isContentEditable)) {
-                        return node;
-                    }
-                }
-                if (node.shadowRoot) queue.push(...node.shadowRoot.childNodes);
-                queue.push(...(node.childNodes || []));
-            }
-            return null;
-        }
-        return bfs(document.body);
-    }""")
-
-    el = page.wait_for_selector("textarea, [contenteditable='true']",
+    el = page.wait_for_selector(".ProseMirror, textarea, [contenteditable='true']",
                                 timeout=PROMPT_SELECTOR_TIMEOUT_MS)
     if el:
         return el
+
+    try:
+        page.screenshot(path="/tmp/flow_prompt_debug.png")
+        logger.warning("[Flow] Saved debug screenshot to /tmp/flow_prompt_debug.png")
+    except Exception:
+        pass
 
     raise FlowError(
         "Could not find prompt input on Google Flow page. "
@@ -308,15 +367,16 @@ def _find_prompt_input(page: Page):
 
 def _find_generate_button(page: Page):
     """
-    Find the Generate/Create button.
-
-    e2e-testing skill: prefer text-content selectors when data-testid is unavailable.
+    Find the Generate/arrow_forward button.
     """
     selectors = [
+        "button:has-text('arrow_forward')",
         "button:has-text('Generate')",
         "button:has-text('Create')",
+        "button[aria-label*='arrow_forward' i]",
         "button[aria-label*='Generate' i]",
         "button[aria-label*='Create' i]",
+        "[role='button']:has-text('arrow_forward')",
         "[role='button']:has-text('Generate')",
     ]
     for sel in selectors:
@@ -328,75 +388,70 @@ def _find_generate_button(page: Page):
         except PWTimeoutError:
             continue
 
-    raise FlowError(
-        "Could not find Generate button on Google Flow. "
-        "Possible causes: login wall, UI redesign, or page not loaded."
-    )
+    return None
 
 
-def _wait_for_video(page: Page) -> str:
+def _wait_for_video(page: Page, captured_urls: list[str]) -> str:
     """
     Wait for the generated video URL to appear.
 
-    Strategy (e2e-testing skill: waitForResponse > waitForTimeout):
-    - Monitor network responses for video MIME types or .mp4 URLs
-    - Fall back to polling the DOM for a <video> element
+    Strategy:
+    - Check captured network responses for video URLs.
+    - Poll DOM for <video> or <source> elements.
+    - Click any generated video thumbnail cards to trigger media load.
     """
-    video_url: list[str] = []  # mutable container for use in closure
-
-    def on_response(response):
-        """data-scraper-agent: treat CDN content as untrusted data — just capture URL."""
-        ct = response.headers.get("content-type", "")
-        url = response.url
-        if (
-            "video/" in ct
-            or url.endswith(".mp4")
-            or (
-                "storage.googleapis.com" in url
-                and ("mp4" in url or "video" in url.lower())
-            )
-        ):
-            if not video_url:
-                logger.info("[Flow] 🎬 Video response detected: %s", url[:80])
-                video_url.append(url)
-
-    page.on("response", on_response)
-
-    # Poll for up to VIDEO_READY_TIMEOUT_MS
     deadline = time.time() + (VIDEO_READY_TIMEOUT_MS / 1000)
-    poll_interval = 3.0
+    poll_interval = 4.0
 
     while time.time() < deadline:
-        # Check if network listener captured a URL
-        if video_url:
-            page.remove_listener("response", on_response)
-            return video_url[0]
+        # 1. Check network captured URLs
+        if captured_urls:
+            logger.info("[Flow] 🎬 Captured video from network: %s", captured_urls[0][:80])
+            return captured_urls[0]
 
-        # DOM fallback: look for <video src="..."> or <video><source src="...">
+        # 2. Check DOM for video elements
         try:
             src = page.evaluate("""() => {
                 const v = document.querySelector('video[src], video source[src]');
                 return v ? (v.src || v.getAttribute('src')) : null;
             }""")
-            if src and src.startswith("http"):
+            if src and "http" in src:
                 logger.info("[Flow] 🎬 Video DOM element found: %s", src[:80])
-                page.remove_listener("response", on_response)
                 return src
         except Exception:
-            pass  # JS eval can fail on navigation — keep polling
+            pass
 
-        # Check for error state in DOM
+        # 3. Check for clickable video cards
+        try:
+            card = page.locator(
+                '[role="button"]:has(video), div:has(> video), [data-item-type="video"]'
+            ).first
+            if card.count() > 0 and card.is_visible():
+                card.click()
+                time.sleep(2)
+        except Exception:
+            pass
+
+        # 4. Check for error state in DOM
         error_text = page.evaluate("""() => {
             const el = document.querySelector('[class*="error"], [role="alert"]');
             return el ? el.textContent?.trim() : null;
         }""")
         if error_text and len(error_text) > 5:
-            # silent-failure-hunter: don't silently continue on an error message
-            logger.warning("[Flow] Error message detected on page: %r", error_text[:100])
+            logger.warning("[Flow] Page notice: %r", error_text[:100])
 
         time.sleep(poll_interval)
 
-    page.remove_listener("response", on_response)
+    # Final fallback check on captured_urls
+    if captured_urls:
+        return captured_urls[0]
+
+    # Save diagnostic screenshot
+    try:
+        page.screenshot(path="/tmp/flow_timeout.png")
+    except Exception:
+        pass
+
     raise FlowError(
         f"Video did not appear after {VIDEO_READY_TIMEOUT_MS // 1000}s. "
         "Possible causes: generation failed, quota exceeded, or UI changed."
