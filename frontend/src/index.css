@@ -591,6 +591,36 @@ a:hover {
   color: var(--text-muted);
 }
 
+.badge-succeeded {
+  background-color: var(--success-subtle);
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.badge-running {
+  background-color: var(--accent-subtle);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.badge-pending {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-medium);
+  color: var(--text-primary);
+}
+
+.badge-dead_letter {
+  background-color: var(--error-subtle);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.badge-cancelled {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-subtle);
+  color: var(--text-muted);
+}
+
 /* --------------------------------------------------------------------------
    FORM CONTROLS
    -------------------------------------------------------------------------- */

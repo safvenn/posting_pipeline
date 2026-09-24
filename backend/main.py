@@ -24,17 +24,22 @@ from backend.jobs.job_queue import run_serial_queue
 from backend.jobs.asmr_workflow_job import run_asmr_workflow_job
 from backend.jobs.instagram_job import run_instagram_publish_job
 from backend.jobs.auto_generate_job import run_auto_generate, trigger_now, get_last_run_result
+from backend.middleware.security import add_security_headers
+from backend.middleware.rate_limit import RateLimitMiddleware
+from backend.middleware.request_context import RequestIDMiddleware, RequestTimingMiddleware
+from backend.routers.jobs import router as jobs_router
+from backend.routers.metrics import router as metrics_router
+from backend.routers.admin import router as admin_router
+from backend.logging_config import configure_logging, get_logger
 
 # --------------------------------------------------------------------------- #
 # Logging                                                                       #
 # --------------------------------------------------------------------------- #
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
-logger = logging.getLogger(__name__)
+import os as _os
+_json_logs = _os.environ.get("LOG_FORMAT", "json").lower() != "text"
+configure_logging(json_output=_json_logs, level=_os.environ.get("LOG_LEVEL", "INFO"))
+logger = get_logger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -95,15 +100,29 @@ def _configure_scheduler() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Creating database tables (if not exist)")
-    Base.metadata.create_all(bind=engine)
+    # ------------------------------------------------------------------ #
+    # Schema management — Alembic ONLY in production                      #
+    # ------------------------------------------------------------------ #
+    # IMPORTANT: We do NOT call Base.metadata.create_all() here.
+    # Production schema is managed exclusively via Alembic migrations.
+    # Running `alembic upgrade head` must happen as part of the deploy
+    # command (or a pre-deploy migration step).
+    #
+    # In development/testing environments, run:
+    #   alembic upgrade head
+    # before starting the server.
+    #
+    # The database_migrations.py fallback still runs for columns that
+    # were added before Alembic was introduced, ensuring backward compat.
     try:
         from backend.database_migrations import run_migrations
         run_migrations()
     except Exception as exc:
         logger.warning("Error running database migrations: %s", exc)
 
-    # Recover any posts left stuck in 'cleaning' from prior restarts
+    # ------------------------------------------------------------------ #
+    # Startup recovery — conservative, no thread spawning                 #
+    # ------------------------------------------------------------------ #
     try:
         from backend.database import SessionLocal
         from backend.models import Post
@@ -169,19 +188,42 @@ async def lifespan(app: FastAPI):
                 db.commit()
                 logger.info("Startup recovery: cleared retry backoff on %d post(s)", len(expired_retry))
 
-            # 5. Automatically trigger Drive upload for any posts missing drive_file_id
-            import threading
-            from backend.services.storage import upload_post_to_drive
-            missing_drive = db.query(Post.id).filter(
+            # NOTE: Drive uploads for posts missing drive_file_id are intentionally
+            # NOT triggered here. Spawning background threads per-post at startup
+            # could create dozens of threads and overwhelm the server.
+            # The serial queue will pick them up on the next tick.
+            missing_drive_count = db.query(Post).filter(
                 Post.drive_file_id.is_(None),
                 Post.drive_upload_status.in_(["none", "pending", "failed"]),
-            ).all()
-            for (p_id,) in missing_drive:
-                logger.info("Startup recovery: triggering background Drive upload for post %s", p_id)
-                threading.Thread(target=upload_post_to_drive, args=(p_id,), daemon=True).start()
+            ).count()
+            if missing_drive_count:
+                logger.info(
+                    "Startup: %d posts missing Drive archive — will be processed by serial queue",
+                    missing_drive_count,
+                )
 
     except Exception as exc:
         logger.warning("Startup post recovery error: %s", exc)
+
+    # --- Phase 5: Stale Job recovery (before scheduler starts) ---
+    # Reset RUNNING jobs that were abandoned by a previous crash.
+    # Must run BEFORE the scheduler starts so it doesn't race with new jobs.
+    try:
+        from backend.services.circuit_breaker import recover_stale_running_jobs
+        from backend.database import SessionLocal
+        with SessionLocal() as recovery_db:
+            stale_count = recover_stale_running_jobs(recovery_db)
+            if stale_count:
+                logger.warning(
+                    "Startup: reset %d stale RUNNING job(s) to CREATED (crash recovery)",
+                    stale_count,
+                    extra={"stale_jobs_reset": stale_count},
+                )
+            else:
+                logger.info("Startup: no stale running jobs found")
+    except Exception as exc:
+        logger.warning("Stale job recovery error (non-fatal): %s", exc)
+
 
     logger.info("Starting background scheduler")
     _configure_scheduler()
@@ -221,9 +263,21 @@ def create_app() -> FastAPI:
         allow_origin_regex=r"^(https://([a-zA-Z0-9-]+\.)*(flow\.google|flow\.google\.com|labs\.google)|chrome-extension://.*)$",
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-API-Key"],
-        expose_headers=["Content-Disposition"],
+        allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"],
+        expose_headers=["Content-Disposition", "X-Request-ID", "X-Response-Time"],
     )
+
+    # Security headers — must be added before CORS middleware in the stack
+    add_security_headers(app)
+
+    # Rate limiting — per-IP sliding window
+    app.add_middleware(RateLimitMiddleware)
+
+    # Request ID correlation + structured access logging
+    # Order matters: RequestTimingMiddleware runs first (outermost),
+    # RequestIDMiddleware runs second so timing wraps the ID assignment.
+    app.add_middleware(RequestTimingMiddleware)
+    app.add_middleware(RequestIDMiddleware)
 
     _trusted_origins: set[str] = set(allowed)
 
@@ -317,9 +371,43 @@ def create_app() -> FastAPI:
     app.include_router(asmr_router,      dependencies=[Depends(require_api_key)])
     app.include_router(asmr_food_router,  dependencies=[Depends(require_api_key)])
     app.include_router(settings_router,   dependencies=[Depends(require_api_key)])
+    app.include_router(jobs_router,       dependencies=[Depends(require_api_key)])
+    app.include_router(metrics_router,    dependencies=[Depends(require_api_key)])
+    app.include_router(admin_router,      dependencies=[Depends(require_api_key)])
 
-    # Public health endpoint — no auth required
-    @app.get("/api/health")
+    # Public health endpoints — no auth required
+    # Liveness: is the process alive?
+    @app.get("/api/health/live", tags=["health"])
+    def health_live():
+        """Liveness probe — returns 200 if the process is running."""
+        return {"status": "ok"}
+
+    # Readiness: is the process ready to serve traffic?
+    @app.get("/api/health/ready", tags=["health"])
+    def health_ready():
+        """Readiness probe — checks database connectivity."""
+        db_ok = False
+        db_error = None
+        try:
+            from backend.database import SessionLocal
+            from sqlalchemy import text
+            with SessionLocal() as _db:
+                _db.execute(text("SELECT 1"))
+            db_ok = True
+        except Exception as exc:
+            db_error = str(exc)
+
+        scheduler_ok = _scheduler.running
+        ready = db_ok  # scheduler is optional for readiness
+
+        return {
+            "status": "ready" if ready else "degraded",
+            "database": "ok" if db_ok else f"error: {db_error}",
+            "scheduler": "ok" if scheduler_ok else "stopped",
+        }
+
+    # Legacy health endpoint — preserved for backward compatibility
+    @app.get("/api/health", tags=["health"])
     def health():
         jobs = [
             {"id": j.id, "name": j.name, "next_run": str(j.next_run_time)}

@@ -252,28 +252,56 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
     except Exception as exc:
         logger.info("[Flow] Studio button not shown or already in studio: %s", exc)
 
-    # ---- 4.5. Ensure Video Mode and 9:16 Aspect Ratio are selected ----
+    # ---- 4.5. Configure Video Mode, Omni 1.1 model, 9:16 aspect ratio, and x1 quantity ----
     try:
-        model_btn = page.locator(
-            'button:has-text("Banana"), button:has-text("Nano"), [role="button"]:has-text("Banana")'
-        )
-        if model_btn.count() > 0:
-            logger.info("[Flow] Opening model settings menu...")
-            model_btn.first.click()
+        # 1. Open settings trigger
+        trigger = page.locator(
+            'button[aria-label="Settings trigger"], button:has-text("crop_"), button:has-text("Nano"), button:has-text("Banana"), button:has-text("Omni"), button:has-text("Video")'
+        ).last
+        if trigger.is_visible():
+            logger.info("[Flow] Opening generation settings popup...")
+            trigger.click()
             time.sleep(1)
 
-        video_tab = page.locator('button:has-text("Video"), [role="tab"]:has-text("Video")').first
-        if video_tab.count() > 0:
-            logger.info("[Flow] Selecting Video tab...")
+        # 2. Select Video tab in popup
+        video_tab = page.locator('button[role="radio"]:has-text("Video"), button:has-text("videocamVideo")').first
+        if video_tab.is_visible():
+            logger.info("[Flow] Selecting Video mode tab...")
             video_tab.click()
             time.sleep(1)
 
-        ar_btn = page.locator('button:has-text("9:16"), [role="button"]:has-text("9:16")').first
-        if ar_btn.count() > 0:
-            logger.info("[Flow] Selecting 9:16 vertical aspect ratio...")
-            ar_btn.click()
-            time.sleep(1)
+        # 3. Ensure Omni 1.1 model family is selected
+        model_btn = page.locator('button[aria-label="Select model family"]').first
+        if model_btn.is_visible():
+            current_model = model_btn.text_content().strip()
+            if "omni" not in current_model.lower():
+                logger.info("[Flow] Model is %r; selecting Omni 1.1 Flash...", current_model)
+                model_btn.click()
+                time.sleep(1)
+                omni_item = page.locator(
+                    '.cdk-overlay-pane [role="menuitem"]:has-text("Omni"), .cdk-overlay-pane button:has-text("Omni"), .cdk-overlay-pane [role="option"]:has-text("Omni")'
+                ).first
+                if omni_item.is_visible():
+                    omni_item.click()
+                    time.sleep(1)
+            else:
+                logger.info("[Flow] Omni 1.1 model is selected.")
 
+        # 4. Select 9:16 vertical shorts aspect ratio
+        ar_btn = page.locator('button:has-text("9:16"), [role="button"]:has-text("9:16")').first
+        if ar_btn.is_visible():
+            logger.info("[Flow] Selecting 9:16 vertical aspect ratio (shorts)...")
+            ar_btn.click()
+            time.sleep(0.5)
+
+        # 5. Select x1 (only generate 1 video)
+        x1_btn = page.locator('button[role="radio"]:has-text("x1")').first
+        if x1_btn.is_visible():
+            logger.info("[Flow] Setting quantity to x1 (single video)...")
+            x1_btn.click()
+            time.sleep(0.5)
+
+        # Close settings popup
         page.keyboard.press("Escape")
         time.sleep(1)
     except Exception as exc:
@@ -315,12 +343,17 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
 
 
 def _assert_not_login_page(page: Page) -> None:
-    """Detect Google login redirect and raise a clear error."""
+    """Detect Google login redirect or unauthenticated /about page and raise a clear error."""
     url = page.url
-    if "accounts.google.com" in url or "signin" in url.lower():
+    if (
+        "accounts.google.com" in url
+        or "signin" in url.lower()
+        or url.rstrip("/").endswith("/about")
+        or "/about" in url
+    ):
         raise FlowCookiesExpiredError(
-            "Google redirected to login — session cookies have expired. "
-            "Run export_cookies.py on your laptop to refresh them."
+            f"Google Flow redirected to unauthenticated page ({url}) — session cookies have expired or are missing. "
+            "Please run 'python export_cookies.py' on your laptop to refresh them."
         )
     logger.debug("[Flow] URL OK: %s", url[:80])
 
@@ -430,11 +463,14 @@ def _wait_for_video(page: Page, captured_urls: list[str]) -> str:
             ).first
             if card.count() > 0 and card.is_visible():
                 card.click()
-                time.sleep(2)
-            else:
-                # Click candidate canvas coordinates where recent generated videos sit
-                page.mouse.click(590, 240)
                 time.sleep(1)
+            else:
+                # Click candidate canvas coordinates where recent generated videos sit (supports both 2-card and 4-card layouts)
+                for coords in [(248, 250), (370, 250), (480, 250), (590, 250)]:
+                    page.mouse.click(*coords)
+                    time.sleep(0.5)
+                    if captured_urls:
+                        break
         except Exception:
             pass
 

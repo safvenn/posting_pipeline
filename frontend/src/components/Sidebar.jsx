@@ -12,6 +12,7 @@ import {
   Clock,
   Radio,
   Settings2,
+  Activity,
   X,
 } from 'lucide-react'
 
@@ -22,10 +23,11 @@ const NAV_MAIN = [
 ]
 
 const NAV_AUTOMATION = [
-  { to: '/asmr',     icon: Sparkles,   label: 'ASMR Studio' },
-  { to: '/channels', icon: Tv2,        label: 'Channels' },
-  { to: '/failed',   icon: AlertTriangle, label: 'Failed Jobs' },
-  { to: '/settings', icon: Settings2,  label: 'Settings' },
+  { to: '/asmr',       icon: Sparkles,      label: 'ASMR Studio' },
+  { to: '/operations', icon: Activity,      label: 'Operations' },
+  { to: '/channels',   icon: Tv2,           label: 'Channels' },
+  { to: '/failed',     icon: AlertTriangle, label: 'Failed Jobs' },
+  { to: '/settings',   icon: Settings2,     label: 'Settings' },
 ]
 
 export default function Sidebar({ isOpen, onClose }) {

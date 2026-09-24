@@ -24,6 +24,8 @@ from backend.services.youtube_auth import (
     is_quota_error,
     quota_error_message,
 )
+from backend.services.job_tracker import JobTracker
+from backend.repositories.job_repository import JobType
 
 logger = logging.getLogger(__name__)
 
@@ -86,49 +88,56 @@ def comment_one_post(post_id: int) -> None:
     Post the first comment on a single uploaded post (blocking).
     Called by the serial job queue runner.
     """
-    db = SessionLocal()
-    try:
-        post = db.get(Post, post_id)
-        if not post:
-            logger.warning("Post %s not found for commenting", post_id)
-            return
+    with JobTracker(post_id, JobType.COMMENT, input_data={"post_id": post_id}) as tracker:
+        db = SessionLocal()
+        try:
+            post = db.get(Post, post_id)
+            if not post:
+                logger.warning("Post %s not found for commenting", post_id)
+                return
 
-        now = datetime.now(timezone.utc)
-        buffer = timedelta(minutes=COMMENT_BUFFER_MINUTES)
+            now = datetime.now(timezone.utc)
+            buffer = timedelta(minutes=COMMENT_BUFFER_MINUTES)
 
-        # Verify post is ready for commenting
-        if post.status not in ["scheduled", "uploaded"] or post.first_comment_posted:
-            return
-        if not post.youtube_video_id or not post.scheduled_at:
-            return
-        if post.scheduled_at + buffer > now:
-            logger.debug("Post %s not ready for comment yet (buffer not elapsed)", post_id)
-            return
+            # Verify post is ready for commenting
+            if post.status not in ["scheduled", "uploaded"] or post.first_comment_posted:
+                return
+            if not post.youtube_video_id or not post.scheduled_at:
+                return
+            if post.scheduled_at + buffer > now:
+                logger.debug("Post %s not ready for comment yet (buffer not elapsed)", post_id)
+                return
 
-        success = _try_post_comment(post, db)
-        post.first_comment_posted = success
-        if success:
-            post.status = "commented"
-            post.error_message = None
-        else:
-            existing_err = post.error_message or ""
-            if "comment" not in existing_err:
-                post.error_message = (
-                    (existing_err + " | " if existing_err else "") +
-                    "first comment failed after all retries"
+            success = _try_post_comment(post, db)
+            post.first_comment_posted = success
+            if success:
+                post.status = "commented"
+                post.error_message = None
+                tracker.set_output(
+                    {"video_id": post.youtube_video_id, "comment_posted": True},
+                    external_ref=post.youtube_video_id,
                 )
-            # Advance to 'commented' so the serial pipeline queue doesn't re-pick
-            # this post every 30s and block the worker thread for 20s.
-            post.status = "commented"
-        post.updated_at = now
-        db.commit()
-        logger.info("Comment job for post %s complete (success=%s)", post_id, success)
+            else:
+                existing_err = post.error_message or ""
+                if "comment" not in existing_err:
+                    post.error_message = (
+                        (existing_err + " | " if existing_err else "") +
+                        "first comment failed after all retries"
+                    )
+                # Advance to 'commented' so the serial pipeline queue doesn't re-pick
+                # this post every 30s and block the worker thread for 20s.
+                post.status = "commented"
+                tracker.set_output({"comment_posted": False, "reason": "all_retries_exhausted"})
+            post.updated_at = now
+            db.commit()
+            logger.info("Comment job for post %s complete (success=%s)", post_id, success)
 
-    except Exception:
-        logger.exception("Unexpected error in comment job for post %s", post_id)
-        db.rollback()
-    finally:
-        db.close()
+        except Exception:
+            logger.exception("Unexpected error in comment job for post %s", post_id)
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
 
 def get_next_commentable_post_id() -> int | None:

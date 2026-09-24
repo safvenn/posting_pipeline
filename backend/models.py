@@ -288,3 +288,298 @@ class AppSettings(Base):
 
     def __repr__(self) -> str:
         return f"<AppSettings key={self.key!r} value={self.value!r}>"
+
+
+# --------------------------------------------------------------------------- #
+# Idempotency Keys — duplicate-publish prevention                             #
+# --------------------------------------------------------------------------- #
+
+class PostIdempotencyRecord(Base):
+    """
+    Database-backed idempotency record for external side effects.
+
+    Prevents duplicate YouTube uploads, Instagram publishes, Drive archives,
+    and Sheet updates after worker crashes or network timeouts.
+
+    Key format examples:
+      youtube:post:182:publish
+      instagram:post:182:publish
+      instagram:post:182:container_create
+      sheet:post:182:update
+      drive:post:182:archive_original
+    """
+    __tablename__ = "post_idempotency_records"
+    __table_args__ = (
+        UniqueConstraint("key", name="uq_idempotency_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    key: Mapped[str] = mapped_column(String(256), nullable=False, unique=True, index=True)
+    # pending | succeeded | failed
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    # Provider-returned identifier (e.g. YouTube video_id, Instagram media_id)
+    external_id: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # JSON-serialized result payload for re-use without re-executing
+    result_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Error detail if status == failed
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # When this record expires and can be cleaned up
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    # When the operation was last executed
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    def __repr__(self) -> str:
+        return f"<PostIdempotencyRecord key={self.key!r} status={self.status!r} external_id={self.external_id!r}>"
+
+
+# --------------------------------------------------------------------------- #
+# Job — durable execution record per pipeline step                            #
+# --------------------------------------------------------------------------- #
+
+class Job(Base):
+    """
+    Durable execution record for each pipeline step attempted on a Post.
+
+    Separates EXECUTION state (what is running right now, attempt number,
+    worker identity, duration) from BUSINESS state (post.status, which
+    represents the content lifecycle).
+
+    Design rationale:
+      - Post.status = current content lifecycle state (queued → commented)
+      - Job = a specific attempt to advance a Post through a step
+      - Multiple Jobs can exist for a single Post (retries create new Jobs)
+      - Enables: retry auditing, per-step latency tracking, worker identification,
+        DLQ visibility without polluting the Post model
+
+    Job lifecycle: created → running → succeeded | failed | cancelled
+    """
+    __tablename__ = "jobs"
+    __table_args__ = (
+        # Fast lookup: all jobs for a post
+        __import__("sqlalchemy").Index("ix_jobs_post_id_created_at", "post_id", "created_at"),
+        # Fast lookup: jobs by status (queue depth monitoring)
+        __import__("sqlalchemy").Index("ix_jobs_status_scheduled_at", "status", "scheduled_at"),
+        # Fast lookup: running jobs (stale lock detection)
+        __import__("sqlalchemy").Index("ix_jobs_status_started_at", "status", "started_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    # Which post this job is for (nullable for system-level jobs like ASMR workflow)
+    post_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("posts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    # Job type: clean | enrich | youtube_upload | comment | instagram_publish |
+    #           drive_archive | sheet_sync | asmr_workflow | auto_generate
+    job_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    # Execution state: created | scheduled | running | succeeded | failed | cancelled | dead_letter
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="created", index=True)
+
+    # Attempt number for this job_type + post_id combination (1-based)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    # Worker identity — process ID or hostname of the worker that picked this up
+    worker_id: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+
+    # When this job was queued for execution
+    scheduled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    # When the worker picked it up
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When it finished (succeeded or failed)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Duration in milliseconds (computed on finish)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Error detail on failure
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Full error traceback (truncated)
+    error_traceback: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # JSON payload for task input (e.g., {"video_path": "...", "channel": "..."})
+    input_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # JSON payload for task output (e.g., {"video_id": "...", "view_url": "..."})
+    output_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # External reference (e.g., YouTube video_id, Instagram media_id, Celery task_id)
+    external_ref: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Job id={self.id} type={self.job_type!r} "
+            f"post_id={self.post_id} status={self.status!r} attempt={self.attempt}>"
+        )
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in ("succeeded", "failed", "cancelled", "dead_letter")
+
+    @property
+    def elapsed_seconds(self) -> Optional[float]:
+        if self.started_at and self.finished_at:
+            return (self.finished_at - self.started_at).total_seconds()
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# RefreshToken — server-side revocable refresh token store                    #
+# --------------------------------------------------------------------------- #
+
+class RefreshToken(Base):
+    """
+    Server-side record for each issued refresh token.
+
+    Enables true logout (invalidate on server) and token rotation
+    without requiring Redis. Replaces the previous stateless approach
+    where stolen refresh tokens could not be revoked.
+
+    Security properties:
+      - token_hash: SHA-256 of the raw token (raw token is never stored)
+      - rotation: each use generates a new token and revokes the old one
+      - revocation: explicit revoke_all_for_user() on logout/compromise
+      - TTL cleanup: expired tokens are pruned periodically
+    """
+    __tablename__ = "refresh_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_refresh_tokens_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    # SHA-256 hex digest of the raw refresh token — never store raw token
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+
+    # The subject (username) this token grants access to
+    username: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+
+    # Device/session identifier — for multi-device management
+    device_id: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # Human-readable client hint (e.g., "Chrome on Windows", "iOS App")
+    user_agent: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # IP address at issuance
+    issued_to_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # Lifecycle
+    is_revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Reason for revocation (logout | rotation | admin | security)
+    revoke_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # When was the token last used (for idle timeout detection)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # How many times has this token been used (should be 1 with rotation)
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<RefreshToken id={self.id} username={self.username!r} "
+            f"revoked={self.is_revoked} expires={self.expires_at}>"
+        )
+
+    @property
+    def is_expired(self) -> bool:
+        return datetime.now(timezone.utc) >= self.expires_at
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.is_revoked and not self.is_expired
+
+
+# --------------------------------------------------------------------------- #
+# AuditLog — append-only admin action trail                                   #
+# --------------------------------------------------------------------------- #
+
+class AuditLog(Base):
+    """
+    Append-only audit trail for security-relevant and admin actions.
+
+    NEVER UPDATE or DELETE rows from this table.
+    It is the authoritative, tamper-evident record of:
+      - Authentication events (login, logout, failed attempts, token revocation)
+      - Post state mutations by admin (manual retries, cancellations, deletions)
+      - Configuration changes (channel credentials updated, settings toggled)
+      - API key usage anomalies
+
+    Each row is self-contained — no foreign keys (preserves log integrity
+    even when referenced rows are deleted).
+    """
+    __tablename__ = "audit_logs"
+    __table_args__ = (
+        # Fast timeline queries: all events for a resource
+        __import__("sqlalchemy").Index("ix_audit_logs_actor_created_at", "actor", "created_at"),
+        __import__("sqlalchemy").Index("ix_audit_logs_event_type_created_at", "event_type", "created_at"),
+        __import__("sqlalchemy").Index("ix_audit_logs_resource_created_at", "resource_type", "resource_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    # Who performed the action (username or "system" for automated actions)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # IP address of the actor (for security reviews)
+    actor_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # Event classification
+    # auth: LOGIN_SUCCESS | LOGIN_FAILURE | LOGOUT | TOKEN_REVOKED | TOKEN_ROTATED
+    # post: POST_STATUS_CHANGED | POST_RETRIED | POST_CANCELLED | POST_DELETED
+    # config: CHANNEL_UPDATED | SETTING_TOGGLED | CREDS_ROTATED
+    # system: WORKER_STARTED | WORKER_STOPPED | MIGRATION_RUN
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    # Outcome: success | failure | denied
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False, default="success")
+
+    # The resource being acted upon (denormalized for log integrity)
+    resource_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # post | channel | setting
+    resource_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)   # str of primary key
+
+    # Human-readable description
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # JSON with structured event details (before/after states, etc.)
+    details_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<AuditLog id={self.id} actor={self.actor!r} "
+            f"event={self.event_type!r} outcome={self.outcome!r}>"
+        )
+

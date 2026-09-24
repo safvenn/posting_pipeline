@@ -1,0 +1,114 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Backend Linting, Testing & Security Scans
+  # ---------------------------------------------------------------------------
+  backend-test:
+    name: Backend Test Suite
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: sqlite:///:memory:
+      LOG_FORMAT: json
+      LOG_LEVEL: INFO
+      JWT_SECRET: test-super-secret-key-32-chars-long!
+      TOKEN_ENCRYPTION_KEY: eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg=
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest-cov
+
+      - name: Run Database Migrations Check
+        run: |
+          python -m pytest backend/tests/test_migrations.py -v
+
+      - name: Run Full Architecture & Unit Test Suite
+        run: |
+          python -m pytest \
+            backend/tests/test_migrations.py \
+            backend/tests/test_security.py \
+            backend/tests/test_fault_tolerance.py \
+            backend/tests/test_observability.py \
+            backend/tests/test_job_tracker.py \
+            backend/tests/test_state_machine.py \
+            backend/tests/test_idempotency.py \
+            backend/tests/test_horizontal_scaling.py \
+            --cov=backend \
+            --cov-report=term-missing \
+            -v
+
+  # ---------------------------------------------------------------------------
+  # 2. Frontend Build & Typecheck
+  # ---------------------------------------------------------------------------
+  frontend-build:
+    name: Frontend Build & Typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package.json
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Build Production Assets (TypeScript & Vite)
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # 3. Docker Container Build Verification
+  # ---------------------------------------------------------------------------
+  docker-build:
+    name: Docker Multi-Stage Build Check
+    runs-on: ubuntu-latest
+    needs: [backend-test, frontend-build]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Container Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: youtube-auto-pipeline:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

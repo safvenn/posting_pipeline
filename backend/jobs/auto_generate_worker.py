@@ -46,6 +46,7 @@ try:
         generate_video,
         check_cookies_exist,
     )
+    from backend.services.email_notifier import notify_cookies_expired
 except ImportError:
     try:
         from flow_playwright import (
@@ -54,17 +55,23 @@ except ImportError:
             generate_video,
             check_cookies_exist,
         )
+        from email_notifier import notify_cookies_expired
     except ImportError:
         # Fallback if in different relative path
         parent_dir = str(Path(__file__).resolve().parent.parent / "services")
         if parent_dir not in sys.path:
             sys.path.insert(0, parent_dir)
-        from flow_playwright import (
-            FlowCookiesExpiredError,
-            FlowError,
-            generate_video,
-            check_cookies_exist,
-        )
+        try:
+            from flow_playwright import (
+                FlowCookiesExpiredError,
+                FlowError,
+                generate_video,
+                check_cookies_exist,
+            )
+            from email_notifier import notify_cookies_expired
+        except ImportError:
+            def notify_cookies_expired(*args, **kwargs):
+                return False
 
 # ---------------------------------------------------------------------------
 # Logging Setup
@@ -155,7 +162,7 @@ class WorkerLock:
 class PipelineClient:
     """Client for interacting with the Posting Pipeline API."""
 
-    def __init__(self, base_url: str, api_key: str = "", timeout: float = 60.0):
+    def __init__(self, base_url: str, api_key: str = "", timeout: float = 120.0):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
@@ -168,43 +175,90 @@ class PipelineClient:
         return headers
 
     def ping(self) -> bool:
-        """Verify API connectivity and responsiveness."""
-        url = f"{self.base_url}/health"
+        """Verify API connectivity and responsiveness via /api/health."""
+        url = f"{self.base_url}/api/health"
         try:
-            with httpx.Client(timeout=10.0, headers=self._headers()) as client:
+            with httpx.Client(timeout=15.0, headers=self._headers()) as client:
                 resp = client.get(url)
                 return resp.status_code < 500
         except Exception as exc:
             logger.warning("Pipeline health check failed (%s): %s", url, exc)
             return False
 
-    def fetch_pending_queue(self, channel: str, limit: int = 5) -> List[QueueItem]:
-        """Fetch pending rows from the Google Sheet via Pipeline API."""
+    def warmup(self, max_attempts: int = 4, backoff_sec: float = 15.0) -> bool:
+        """Pre-warm the Render backend container to survive cold-starts gracefully."""
+        url = f"{self.base_url}/api/health"
+        logger.info("Checking/warming backend pipeline at %s...", url)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with httpx.Client(timeout=30.0, headers=self._headers()) as client:
+                    resp = client.get(url)
+                    if resp.status_code < 500:
+                        logger.info("Backend is online and healthy (attempt %d/%d, HTTP %d).", attempt, max_attempts, resp.status_code)
+                        return True
+                    logger.warning("Backend returned HTTP %d on warmup attempt %d/%d.", resp.status_code, attempt, max_attempts)
+            except Exception as exc:
+                logger.warning("Warmup attempt %d/%d: backend cold or starting up (%s).", attempt, max_attempts, exc)
+            
+            if attempt < max_attempts:
+                sleep_time = backoff_sec * attempt
+                logger.info("Waiting %.0fs for backend spin-up before retry...", sleep_time)
+                time.sleep(sleep_time)
+
+        logger.warning("Backend warmup did not receive healthy response after %d attempts.", max_attempts)
+        return False
+
+    def fetch_pending_queue(self, channel: str, limit: int = 5, max_retries: int = 3) -> List[QueueItem]:
+        """Fetch pending rows from the Google Sheet via Pipeline API with robust retries."""
         url = f"{self.base_url}/api/extension/auto-queue"
         params = {"channel": channel, "limit": limit}
-        with httpx.Client(timeout=self.timeout, headers=self._headers()) as client:
-            resp = client.get(url, params=params)
-            if resp.status_code != 200:
-                logger.error(
-                    "Failed to fetch auto-queue (HTTP %d): %s",
-                    resp.status_code,
-                    resp.text[:200],
-                )
-                resp.raise_for_status()
-            data = resp.json()
 
-        items: List[QueueItem] = []
-        for r in data.get("rows", []):
-            items.append(
-                QueueItem(
-                    id=str(r.get("id")),
-                    prompt=str(r.get("prompt")),
-                    title=r.get("title"),
-                    description=r.get("description"),
-                    tags=r.get("tags"),
-                )
-            )
-        return items
+        last_error: Optional[Exception] = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                with httpx.Client(timeout=self.timeout, headers=self._headers()) as client:
+                    resp = client.get(url, params=params)
+                    if resp.status_code != 200:
+                        logger.error(
+                            "Failed to fetch auto-queue (attempt %d/%d, HTTP %d): %s",
+                            attempt,
+                            max_retries,
+                            resp.status_code,
+                            resp.text[:200],
+                        )
+                        resp.raise_for_status()
+                    data = resp.json()
+
+                items: List[QueueItem] = []
+                for r in data.get("rows", []):
+                    items.append(
+                        QueueItem(
+                            id=str(r.get("id")),
+                            prompt=str(r.get("prompt")),
+                            title=r.get("title"),
+                            description=r.get("description"),
+                            tags=r.get("tags"),
+                        )
+                    )
+                return items
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
+                last_error = exc
+                if attempt < max_retries:
+                    retry_wait = 10 * attempt
+                    logger.warning(
+                        "Queue fetch attempt %d/%d failed (%s). Retrying in %ds...",
+                        attempt,
+                        max_retries,
+                        exc,
+                        retry_wait,
+                    )
+                    time.sleep(retry_wait)
+                else:
+                    logger.error("All %d attempts to fetch queue failed: %s", max_retries, exc)
+
+        if last_error:
+            raise last_error
+        return []
 
     def update_status(self, channel: str, row_id: str, status: str) -> bool:
         """Update auto_status column in Google Sheet (generating/done/uploaded/failed)."""
@@ -301,16 +355,23 @@ def run_worker_batch(
         logger.error(
             "Please run 'python export_cookies.py' on your laptop and transfer flow_cookies.json."
         )
-        return 0
+        try:
+            notify_cookies_expired(channel=channel, details="Cookie file is missing on EC2 worker.")
+        except Exception as notify_err:
+            logger.debug("Failed to send missing cookie notification: %s", notify_err)
+        return -1
 
     client = PipelineClient(base_url=pipeline_url, api_key=api_key)
+
+    # 1b. Pre-warm Render backend container (handles cold-starts gracefully)
+    client.warmup(max_attempts=3, backoff_sec=10.0)
 
     # 2. Fetch queue items
     try:
         pending_items = client.fetch_pending_queue(channel=channel, limit=max_videos)
     except Exception as exc:
-        logger.error("Failed to query pending queue from pipeline: %s", exc)
-        return 0
+        logger.error("Failed to query pending queue from pipeline after retries: %s", exc)
+        return -1
 
     if not pending_items:
         logger.info("No pending prompts found in queue for channel '%s'. Exiting.", channel)
@@ -360,6 +421,10 @@ def run_worker_batch(
         except FlowCookiesExpiredError as exc:
             logger.critical("SESSION EXPIRED: %s", exc)
             client.update_status(channel, item.id, "failed")
+            try:
+                notify_cookies_expired(channel=channel, row_id=item.id, details=str(exc))
+            except Exception as notify_err:
+                logger.error("Failed to send cookie expiry email alert: %s", notify_err)
             # Break early — future requests in this batch will fail too
             break
 
@@ -454,7 +519,7 @@ def main():
                     logger.info("Sleeping for %ds until next poll...", args.loop)
                     time.sleep(args.loop)
             else:
-                run_worker_batch(
+                batch_res = run_worker_batch(
                     pipeline_url=args.pipeline_url,
                     api_key=args.api_key,
                     channel=args.channel,
@@ -462,6 +527,9 @@ def main():
                     delay_sec=args.delay,
                     headless=not args.headful,
                 )
+                if batch_res < 0:
+                    logger.error("Flow worker batch failed with critical error. Exiting with code 1.")
+                    sys.exit(1)
     except WorkerLockError as lock_err:
         logger.warning("Aborting: %s", lock_err)
         sys.exit(0)

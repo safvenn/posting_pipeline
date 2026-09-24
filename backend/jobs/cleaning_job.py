@@ -29,6 +29,8 @@ from backend.services.workflow_logger import (
     CLEANING_COMPLETED,
     RETRY_SCHEDULED,
 )
+from backend.services.job_tracker import JobTracker
+from backend.repositories.job_repository import JobType
 
 logger = logging.getLogger(__name__)
 
@@ -171,51 +173,54 @@ def clean_one_post(post_id: int) -> None:
         _in_progress.add(post_id)
 
     def _run():
-        db = SessionLocal()
-        try:
-            post = db.get(Post, post_id)
-            if not post:
-                logger.warning("[Cleaning] Post %s not found", post_id)
-                return
+        with JobTracker(post_id, JobType.CLEAN, input_data={"post_id": post_id}) as tracker:
+            db = SessionLocal()
+            try:
+                post = db.get(Post, post_id)
+                if not post:
+                    logger.warning("[Cleaning] Post %s not found", post_id)
+                    return
 
-            # Step 1: Drive upload original (before destructive SSH processing)
-            drive_ok = _do_drive_upload(post, db)
-            if not drive_ok:
-                logger.warning(
-                    "[Cleaning] post_id=%s Drive upload failed — deferring cleaning", post_id
-                )
-                # Reset to queued so retry picks it up
-                post.status = "queued"
-                post.updated_at = datetime.now(timezone.utc)
-                db.commit()
-                return
+                # Step 1: Drive upload original (before destructive SSH processing)
+                drive_ok = _do_drive_upload(post, db)
+                if not drive_ok:
+                    logger.warning(
+                        "[Cleaning] post_id=%s Drive upload failed — deferring cleaning", post_id
+                    )
+                    # Reset to queued so retry picks it up
+                    post.status = "queued"
+                    post.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+                    return
 
-            # Step 2: SSH watermark removal
-            from backend.services.watermark import remove_watermark
-            logger.info("[Cleaning] Starting watermark removal for post %s", post_id)
-            wlog(db, post_id=post_id, event_type=CLEANING_STARTED, status="info")
+                # Step 2: SSH watermark removal
+                from backend.services.watermark import remove_watermark
+                logger.info("[Cleaning] Starting watermark removal for post %s", post_id)
+                wlog(db, post_id=post_id, event_type=CLEANING_STARTED, status="info")
 
-            remove_watermark(post_id)
+                remove_watermark(post_id)
 
-            # Re-fetch to check final status
-            db.expire(post)
-            post = db.get(Post, post_id)
-            if post and post.status == "cleaned":
-                wlog(db, post_id=post_id, event_type=CLEANING_COMPLETED, status="success")
-                logger.info("[Cleaning] Watermark removal complete for post %s", post_id)
+                # Re-fetch to check final status
+                db.expire(post)
+                post = db.get(Post, post_id)
+                if post and post.status == "cleaned":
+                    wlog(db, post_id=post_id, event_type=CLEANING_COMPLETED, status="success")
+                    logger.info("[Cleaning] Watermark removal complete for post %s", post_id)
+                    tracker.set_output({"status": "cleaned", "video_path": post.clean_video_path})
 
-                # Step 3: Upload cleaned video to Google Drive for archiving and Instagram publishing
-                _do_clean_drive_upload(post, db)
-            else:
-                status_now = post.status if post else "unknown"
-                logger.warning("[Cleaning] Post %s ended with status=%s", post_id, status_now)
+                    # Step 3: Upload cleaned video to Google Drive for archiving and Instagram publishing
+                    _do_clean_drive_upload(post, db)
+                else:
+                    status_now = post.status if post else "unknown"
+                    logger.warning("[Cleaning] Post %s ended with status=%s", post_id, status_now)
 
-        except Exception:
-            logger.exception("[Cleaning] Unexpected error for post %s", post_id)
-        finally:
-            db.close()
-            with _lock:
-                _in_progress.discard(post_id)
+            except Exception:
+                logger.exception("[Cleaning] Unexpected error for post %s", post_id)
+                raise
+            finally:
+                db.close()
+                with _lock:
+                    _in_progress.discard(post_id)
 
     t = threading.Thread(target=_run, name=f"clean-post-{post_id}", daemon=True)
     t.start()

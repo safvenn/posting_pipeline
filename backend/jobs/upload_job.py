@@ -39,6 +39,9 @@ from backend.services.workflow_logger import (
     FAILED,
 )
 from backend.services.retry import schedule_retry, is_permanent_error, clear_retry_state
+from backend.services.idempotency import IdempotencyService, youtube_publish_key, instagram_container_key
+from backend.services.job_tracker import JobTracker
+from backend.repositories.job_repository import JobType
 
 
 logger = logging.getLogger(__name__)
@@ -221,10 +224,36 @@ def _schedule_single_post(post: Post, db) -> bool:
 
 def _upload_single_post(post: Post, db) -> bool:
     """Upload a single scheduled post to YouTube. Returns True on success."""
+    # --- IDEMPOTENCY CHECK ---
+    # Before calling YouTube, check if we already successfully uploaded this post.
+    # This prevents duplicate videos when: worker crashes after YouTube accepts upload
+    # but before DB update; or when the same post is retried after a timeout.
+    idempotency = IdempotencyService(db)
+    idem_key = youtube_publish_key(post.id)
+    idem_entry = idempotency.get_or_create(idem_key)
+
+    if idem_entry.already_succeeded:
+        # Upload already completed — recover the video_id and continue
+        recovered_video_id = idem_entry.external_id or idem_entry.result_data.get("video_id")
+        if recovered_video_id:
+            logger.warning(
+                "[Idempotency] Post %s: YouTube upload already succeeded (video_id=%s) — skipping duplicate upload",
+                post.id, recovered_video_id,
+            )
+            post.youtube_video_id = recovered_video_id
+            _set_status(db, post, "scheduled")
+            clear_retry_state(post, db)
+            # Trigger sheet writeback in case it was also missed
+            _sheet_writeback(post.channel, post, recovered_video_id, db)
+            return True
+        # external_id not stored — fall through to re-attempt (safe: YouTube deduplicates by content)
+        logger.warning("[Idempotency] Post %s: idempotency record succeeded but no video_id stored — re-uploading", post.id)
+
     try:
         yt = get_youtube_client(post.channel)
     except Exception as exc:
         logger.error("YouTube auth failed for %s: %s", post.channel, exc)
+        idempotency.mark_failed(idem_key, f"auth error: {exc}")
         _clear_schedule_and_fail(db, post, f"auth error: {exc}")
         return False
 
@@ -234,7 +263,9 @@ def _upload_single_post(post: Post, db) -> bool:
         video_p = resolve_video_path(post.video_path, is_clean=False)
 
     if not video_p or not video_p.exists():
-        _clear_schedule_and_fail(db, post, f"Video file not found on server: {post.clean_video_path or post.video_path}")
+        err = f"Video file not found on server: {post.clean_video_path or post.video_path}"
+        idempotency.mark_failed(idem_key, err)
+        _clear_schedule_and_fail(db, post, err)
         return False
     video_path = str(video_p)
 
@@ -253,8 +284,13 @@ def _upload_single_post(post: Post, db) -> bool:
             err = "YouTube upload returned empty video_id — upload may have failed silently"
             logger.error("Post %s: %s", post.id, err)
             wlog(db, post_id=post.id, event_type=FAILED, status="failure", message=err)
+            idempotency.mark_failed(idem_key, err)
             _clear_schedule_and_fail(db, post, err)
             return False
+
+        # Mark idempotency SUCCEEDED immediately after receiving video_id
+        # This ensures even if the next DB commit fails, a restart will recover
+        idempotency.mark_succeeded(idem_key, external_id=video_id, result_data={"video_id": video_id})
 
         post.youtube_video_id = video_id
         _set_status(db, post, "scheduled")
@@ -268,12 +304,26 @@ def _upload_single_post(post: Post, db) -> bool:
         _sheet_writeback(post.channel, post, video_id, db)
 
         # Pre-create Instagram container while video file is still hot on disk.
+        # IMPORTANT: Use post.id (not the post ORM object) to avoid sharing the
+        # parent thread's SQLAlchemy session across threads (not thread-safe).
+        _post_id_for_ig = post.id
         try:
-            from backend.services.instagram import pre_create_instagram_container
+            def _run_ig_precontainer(pid=_post_id_for_ig):
+                from backend.database import SessionLocal
+                from backend.services.instagram import pre_create_instagram_container
+                _db = SessionLocal()
+                try:
+                    _post = _db.get(Post, pid)
+                    if _post:
+                        pre_create_instagram_container(_post, _db)
+                except Exception as _exc:
+                    logger.warning("Instagram pre-container failed for post %s: %s", pid, _exc)
+                finally:
+                    _db.close()
+
             threading.Thread(
-                target=pre_create_instagram_container,
-                args=(post, db),
-                name=f"ig-precontainer-{post.id}",
+                target=_run_ig_precontainer,
+                name=f"ig-precontainer-{_post_id_for_ig}",
                 daemon=True,
             ).start()
         except Exception as ig_exc:
@@ -291,16 +341,19 @@ def _upload_single_post(post: Post, db) -> bool:
             err = quota_error_message(exc)
             logger.warning("Quota error uploading post %s: %s", post.id, err)
             wlog(db, post_id=post.id, event_type=FAILED, status="failure", message=err)
+            idempotency.mark_failed(idem_key, err)
             _clear_schedule_and_fail(db, post, err)
         elif is_permanent_error(exc):
             err = f"Permanent error: {exc}"
             logger.error("Permanent upload error for post %s: %s", post.id, err)
             wlog(db, post_id=post.id, event_type=FAILED, status="failure", message=err)
+            idempotency.mark_failed(idem_key, err)
             _clear_schedule_and_fail(db, post, err)
         else:
             err = f"upload error: {exc}"
             logger.exception("Upload failed for post %s", post.id)
             wlog(db, post_id=post.id, event_type=FAILED, status="failure", message=err)
+            idempotency.mark_failed(idem_key, err)
             decision = schedule_retry(post, db, err)
             if decision.exhausted:
                 _clear_schedule_and_fail(db, post, err)
@@ -354,20 +407,24 @@ def enrich_one_post(post_id: int) -> None:
     Transitions post: cleaned → scheduled.
     YouTube upload happens in the NEXT step (upload_one_post) in a background thread.
     """
-    db = SessionLocal()
-    try:
-        post = db.get(Post, post_id)
-        if not post:
-            logger.warning("Post %s not found for enrichment", post_id)
-            return
-        if post.status != "cleaned":
-            logger.warning("Post %s is %s not cleaned, skipping enrich", post_id, post.status)
-            return
-        _schedule_single_post(post, db)
-    except Exception:
-        logger.exception("Error enriching post %s", post_id)
-    finally:
-        db.close()
+    with JobTracker(post_id, JobType.ENRICH, input_data={"post_id": post_id}) as tracker:
+        db = SessionLocal()
+        try:
+            post = db.get(Post, post_id)
+            if not post:
+                logger.warning("Post %s not found for enrichment", post_id)
+                return
+            if post.status != "cleaned":
+                logger.warning("Post %s is %s not cleaned, skipping enrich", post_id, post.status)
+                return
+            success = _schedule_single_post(post, db)
+            if success:
+                tracker.set_output({"scheduled_at": str(post.scheduled_at), "channel": post.channel})
+        except Exception:
+            logger.exception("Error enriching post %s", post_id)
+            raise
+        finally:
+            db.close()
 
 
 def upload_one_post(post_id: int) -> None:
@@ -376,23 +433,32 @@ def upload_one_post(post_id: int) -> None:
     YouTube API upload only. Post must already be in 'scheduled' status with enriched data.
     Transitions post: scheduled → uploaded (status set by _upload_single_post).
     """
-    db = SessionLocal()
-    try:
-        post = db.get(Post, post_id)
-        if not post:
-            logger.warning("Post %s not found for YouTube upload", post_id)
-            return
-        if post.status != "scheduled":
-            logger.warning("Post %s is %s not scheduled, skipping upload", post_id, post.status)
-            return
-        if post.youtube_video_id:
-            logger.info("Post %s already has video_id %s, skipping upload", post_id, post.youtube_video_id)
-            return
-        _upload_single_post(post, db)
-    except Exception:
-        logger.exception("Error uploading post %s to YouTube", post_id)
-    finally:
-        db.close()
+    with JobTracker(post_id, JobType.YOUTUBE_UPLOAD, input_data={"post_id": post_id}) as tracker:
+        db = SessionLocal()
+        try:
+            post = db.get(Post, post_id)
+            if not post:
+                logger.warning("Post %s not found for YouTube upload", post_id)
+                return
+            if post.status != "scheduled":
+                logger.warning("Post %s is %s not scheduled, skipping upload", post_id, post.status)
+                return
+            if post.youtube_video_id:
+                logger.info("Post %s already has video_id %s, skipping upload", post_id, post.youtube_video_id)
+                tracker.set_output({"video_id": post.youtube_video_id, "skipped": True},
+                                   external_ref=post.youtube_video_id)
+                return
+            success = _upload_single_post(post, db)
+            # Re-fetch video_id that _upload_single_post stored on post
+            db.refresh(post)
+            if success and post.youtube_video_id:
+                tracker.set_output({"video_id": post.youtube_video_id},
+                                   external_ref=post.youtube_video_id)
+        except Exception:
+            logger.exception("Error uploading post %s to YouTube", post_id)
+            raise
+        finally:
+            db.close()
 
 
 # Keep for backwards compatibility (called by some tests)

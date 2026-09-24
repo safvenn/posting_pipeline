@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. PostgreSQL Database Service
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: pipeline-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: posting_pipeline
+      POSTGRES_USER: posting_user
+      POSTGRES_PASSWORD: posting_secure_password_123!
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U posting_user -d posting_pipeline"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # 2. Main Web & API Service (FastAPI + React Dashboard)
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pipeline-web
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: 8000
+      DATABASE_URL: postgresql://posting_user:posting_secure_password_123!@postgres:5432/posting_pipeline
+      TIMEZONE: Asia/Kolkata
+      LOG_FORMAT: json
+      LOG_LEVEL: INFO
+      JWT_SECRET: ${JWT_SECRET:-production-jwt-secret-replace-with-64-hex-chars}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg=}
+      UPLOAD_DIR: /app/data/uploads
+      PROCESSED_DIR: /app/data/processed
+      LOG_DIR: /app/data/logs
+    volumes:
+      - pipeline_storage:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # 3. Horizontal Scaling Background Worker Service
+  #    Demonstrates distributed task leasing via WorkerCoordinator
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pipeline-worker-1
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://posting_user:posting_secure_password_123!@postgres:5432/posting_pipeline
+      TIMEZONE: Asia/Kolkata
+      LOG_FORMAT: json
+      LOG_LEVEL: INFO
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg=}
+    entrypoint: ["python", "-m", "backend.jobs.job_queue"]
+    volumes:
+      - pipeline_storage:/app/data
+
+volumes:
+  postgres_data:
+  pipeline_storage:

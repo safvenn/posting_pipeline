@@ -61,6 +61,14 @@ export const queryKeys = {
 
   // App Settings
   settings: () => ['settings'],
+
+  // Operations & Observability
+  metrics: () => ['metrics'],
+  jobStats: () => ['jobs', 'stats'],
+  jobs: (params = {}) => ['jobs', 'list', params],
+  circuitBreaker: () => ['jobs', 'circuitBreaker'],
+  deadLetters: () => ['jobs', 'deadLetters'],
+  securityStatus: () => ['admin', 'securityStatus'],
 }
 
 // ─── Stale Time Constants ───────────────────────────────────────────────────

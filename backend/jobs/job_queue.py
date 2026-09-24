@@ -16,6 +16,11 @@ Priority order when picking the next post to process:
   uploaded → Instagram Reel publishing      [fast, time-gated]
 
 Runs every 30 seconds via APScheduler with max_instances=1.
+
+Phase 3 changes:
+  - All post selector queries delegated to PostRepository
+  - Orphan recovery in get_next_cleanable_post_id moved to PostRepository
+  - job_queue.py contains ONLY orchestration logic (no raw DB queries)
 """
 from __future__ import annotations
 
@@ -34,6 +39,7 @@ from backend.jobs.instagram_job import (
     publish_instagram_for_post,
     get_next_instagram_publishable_post_id,
 )
+from backend.services.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -63,15 +69,20 @@ def _is_watermark_cleaning_enabled() -> bool:
 
 
 def _skip_cleaning_for_post(post_id: int) -> None:
-    """Advance a queued post directly to 'cleaned' status, bypassing gwr SSH.
+    """Advance a queued post directly to 'cleaned' status, bypassing watermark SSH.
 
     Used when clean_watermark_enabled is False — the original video is used as-is
-    for enrichment and YouTube upload (no Gemini watermark removal performed).
+    for enrichment and YouTube upload (no watermark removal performed).
+    Records the skip as a CLEAN Job (succeeded, 0ms).
     """
-    try:
-        from backend.database import SessionLocal
-        from backend.models import Post
-        with SessionLocal() as db:
+    from backend.database import SessionLocal
+    from backend.services.job_tracker import JobTracker
+    from backend.repositories.job_repository import JobType
+
+    with JobTracker(post_id, JobType.CLEAN, input_data={"post_id": post_id, "skipped": True}) as tracker:
+        db = SessionLocal()
+        try:
+            from backend.models import Post
             post = db.query(Post).filter(Post.id == post_id, Post.status == "queued").first()
             if post is None:
                 logger.warning("[Queue] Skip-cleaning: post %s not found or no longer queued", post_id)
@@ -81,12 +92,16 @@ def _skip_cleaning_for_post(post_id: int) -> None:
             post.clean_video_path = post.clean_video_path or post.video_path
             post.status = "cleaned"
             db.commit()
+            tracker.set_output({"status": "cleaned", "skipped_watermark": True})
             logger.info(
                 "[Queue] Post %s: watermark cleaning SKIPPED (toggle OFF) — advanced to cleaned",
                 post_id,
             )
-    except Exception:
-        logger.exception("[Queue] Error skipping cleaning for post %s", post_id)
+        except Exception:
+            logger.exception("[Queue] Error skipping cleaning for post %s", post_id)
+            raise
+        finally:
+            db.close()
 
 
 def run_serial_queue() -> None:
@@ -110,6 +125,15 @@ def run_serial_queue() -> None:
         return
 
     try:
+        # Circuit breaker: pause queue if too many dead-letter jobs
+        from backend.database import SessionLocal as _SL
+        _cb_db = _SL()
+        try:
+            if not CircuitBreaker.is_queue_healthy(db=_cb_db):
+                return  # queue is paused — breaker tripped
+        finally:
+            _cb_db.close()
+
         # Priority 1: queued → cleaning (or direct-skip if toggle is OFF)
         post_id = get_next_cleanable_post_id()
         if post_id:

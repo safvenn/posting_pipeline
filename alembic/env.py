@@ -12,7 +12,12 @@ from alembic import context
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from backend.database import Base, normalize_db_url  # noqa: E402
-from backend.models import Post    # noqa: E402, F401 — must import models to register them
+# Import ALL models so Base.metadata has the complete schema for autogenerate.
+# Alembic only sees tables that are registered on Base before target_metadata is set.
+from backend.models import (  # noqa: E402, F401
+    Post, WorkflowEvent, FoodItem, ASMRWorkflowRun, ASMRContentJob,
+    ASMRPublishedContent, PostIdempotencyRecord, Job, RefreshToken, AuditLog,
+)
 from backend.config import settings
 
 config = context.config

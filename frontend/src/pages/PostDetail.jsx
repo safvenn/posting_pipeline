@@ -370,7 +370,10 @@ export default function PostDetail() {
                         </span>
                       ) : (
                         <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                          {post.instagram_status === 'pending' ? '⏳ Publishing...' : 'Not Published / Disabled'}
+                          {post.instagram_status === 'pending' ? '⏳ Publishing...' :
+                           post.instagram_status === 'container_ready' ? '✅ Container ready — auto-publish at scheduled time' :
+                           post.instagram_status === 'none' ? '⏰ Awaiting scheduled time' :
+                           'Not Published / Disabled'}
                         </span>
                       )}
                       {['scheduled', 'uploaded', 'cleaned', 'failed'].includes(post.status) && (
