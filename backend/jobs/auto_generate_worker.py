@@ -430,6 +430,13 @@ def run_worker_batch(
 
         except Exception as exc:
             logger.error("Generation/upload failed for row %s: %s", item.id, exc, exc_info=True)
+            # silent-failure-hunter: check if failure was an unhandled session expiry
+            err_str = str(exc).lower()
+            if any(k in err_str for k in ("about", "session", "cookie", "login", "auth")):
+                try:
+                    notify_cookies_expired(channel=channel, row_id=item.id, details=str(exc))
+                except Exception as notify_err:
+                    logger.error("Failed to send cookie expiry email alert: %s", notify_err)
             # silent-failure-hunter: never leave row in 'generating' state
             client.update_status(channel, item.id, "failed")
 

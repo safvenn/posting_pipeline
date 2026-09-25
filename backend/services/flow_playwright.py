@@ -252,11 +252,14 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
     except Exception as exc:
         logger.info("[Flow] Studio button not shown or already in studio: %s", exc)
 
+    # ---- 4.1 Validate session: verify we didn't end up on unauthenticated page ----
+    _assert_not_login_page(page)
+
     # ---- 4.5. Configure Video Mode, Omni 1.1 model, 9:16 aspect ratio, and x1 quantity ----
     try:
         # 1. Open settings trigger
         trigger = page.locator(
-            'button[aria-label="Settings trigger"], button:has-text("crop_"), button:has-text("Nano"), button:has-text("Banana"), button:has-text("Omni"), button:has-text("Video")'
+            'button[aria-label="Settings trigger"], button:has-text("crop_"), button:has-text("Nano Banana"), button:has-text("Omni 1.1"), button:has-text("Settings")'
         ).last
         if trigger.is_visible():
             logger.info("[Flow] Opening generation settings popup...")
@@ -383,10 +386,13 @@ def _find_prompt_input(page: Page):
 
     # BFS fallback — pierce Shadow DOM via JS
     logger.debug("[Flow] Standard selectors failed, trying Shadow DOM BFS…")
-    el = page.wait_for_selector(".ProseMirror, textarea, [contenteditable='true']",
-                                timeout=PROMPT_SELECTOR_TIMEOUT_MS)
-    if el:
-        return el
+    try:
+        el = page.wait_for_selector(".ProseMirror, textarea, [contenteditable='true']",
+                                    timeout=PROMPT_SELECTOR_TIMEOUT_MS)
+        if el and el.is_visible():
+            return el
+    except Exception:
+        pass
 
     try:
         page.screenshot(path="/tmp/flow_prompt_debug.png")
@@ -394,9 +400,12 @@ def _find_prompt_input(page: Page):
     except Exception:
         pass
 
+    # Check if page was redirected to login or about during prompt location
+    _assert_not_login_page(page)
+
     raise FlowError(
-        "Could not find prompt input on Google Flow page. "
-        "The UI may have changed — check flow.google.com manually."
+        f"Could not find prompt input on Google Flow page ({page.url}). "
+        "The UI may have changed or session expired."
     )
 
 
