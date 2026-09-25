@@ -20,7 +20,16 @@ def run_migrations():
             command.upgrade(alembic_cfg, "head")
             logger.info("Alembic upgrade head completed successfully.")
     except Exception as exc:
-        logger.info("Alembic upgrade note (continuing to direct column check): %s", exc)
+        logger.info("Alembic upgrade note (continuing to direct schema check): %s", exc)
+
+    # 1.5. Ensure all model tables exist (idempotent IF NOT EXISTS)
+    try:
+        from backend.database import Base
+        import backend.models  # noqa: F401
+        Base.metadata.create_all(bind=engine)
+        logger.info("Base.metadata.create_all completed (all model tables ensured).")
+    except Exception as exc:
+        logger.warning("Base.metadata.create_all error: %s", exc)
 
     # 2. Direct column inspection fallback for SQLite / Postgres
     try:

@@ -257,10 +257,27 @@ def _upload_single_post(post: Post, db) -> bool:
         _clear_schedule_and_fail(db, post, f"auth error: {exc}")
         return False
 
-    from backend.services.watermark import resolve_video_path
+    from backend.services.watermark import resolve_video_path, ensure_video_file_on_disk
     video_p = resolve_video_path(post.clean_video_path, is_clean=True)
     if not video_p or not video_p.exists():
         video_p = resolve_video_path(post.video_path, is_clean=False)
+
+    # Auto-restore from Google Drive if missing locally (e.g. after Render ephemeral disk restart)
+    if not video_p or not video_p.exists():
+        if post.clean_drive_file_id:
+            video_p = ensure_video_file_on_disk(
+                post.clean_video_path or f"clean_{post.id}.mp4",
+                is_clean=True,
+                drive_file_id=post.clean_drive_file_id,
+                channel=post.channel,
+            )
+        if (not video_p or not video_p.exists()) and post.drive_file_id:
+            video_p = ensure_video_file_on_disk(
+                post.video_path or f"input_{post.id}.mp4",
+                is_clean=False,
+                drive_file_id=post.drive_file_id,
+                channel=post.channel,
+            )
 
     if not video_p or not video_p.exists():
         err = f"Video file not found on server: {post.clean_video_path or post.video_path}"

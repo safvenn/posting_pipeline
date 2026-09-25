@@ -49,7 +49,8 @@ class GeminiService:
         self._model_name = model_name or settings.gemini_model
         if not self._api_key:
             raise GeminiAPIError("GEMINI_API_KEY not configured", status_code=None)
-        genai.configure(api_key=self._api_key)
+        if not _USING_NEW_SDK:
+            genai.configure(api_key=self._api_key)
 
     def generate_text(
         self,

@@ -227,6 +227,41 @@ def resolve_video_path(path_str: Optional[str], is_clean: bool = False) -> Optio
     return p
 
 
+def ensure_video_file_on_disk(
+    path_str: Optional[str],
+    is_clean: bool = False,
+    drive_file_id: Optional[str] = None,
+    channel: Optional[str] = None,
+) -> Optional[Path]:
+    """
+    Ensure the video file exists on disk.
+    If missing locally (e.g. after Render container restart / ephemeral disk reset),
+    and a drive_file_id is available, automatically download and restore it from Google Drive.
+    """
+    p = resolve_video_path(path_str, is_clean=is_clean)
+    if p and p.is_file() and p.exists():
+        return p
+
+    if drive_file_id and str(drive_file_id).strip():
+        logger.info(
+            "Video missing locally (%s); restoring from Google Drive file_id=%s",
+            path_str, drive_file_id,
+        )
+        try:
+            from backend.services.storage import get_storage
+            base_dir = settings.processed_path() if is_clean else settings.upload_path()
+            target_name = Path(str(path_str)).name if path_str else f"restored_{drive_file_id}.mp4"
+            dest = (base_dir / target_name).resolve()
+            get_storage().download(str(drive_file_id).strip(), dest, channel=channel)
+            if dest.is_file() and dest.exists() and dest.stat().st_size > 0:
+                logger.info("Successfully restored video from Google Drive to %s", dest)
+                return dest
+        except Exception as dl_err:
+            logger.error("Failed to restore video from Google Drive (file_id=%s): %s", drive_file_id, dl_err)
+
+    return p
+
+
 def remove_watermark(post_id: int, db: Session | None = None) -> None:
     """
     Orchestrate full watermark removal pipeline for post_id:
@@ -267,7 +302,12 @@ def remove_watermark(post_id: int, db: Session | None = None) -> None:
                 "WORKER_SSH_HOST not configured. Set it in .env before using gwr removal."
             )
 
-        input_path = resolve_video_path(post.video_path, is_clean=False)
+        input_path = ensure_video_file_on_disk(
+            post.video_path,
+            is_clean=False,
+            drive_file_id=post.drive_file_id,
+            channel=post.channel,
+        )
         if not input_path or not input_path.exists():
             _set_status(
                 db, post, "failed",

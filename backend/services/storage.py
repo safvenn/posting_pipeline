@@ -120,6 +120,9 @@ class GoogleDriveStorage:
             logger.debug("User OAuth Drive service initialization skipped: %s", exc)
 
         # 2. Fallback to Service Account JSON
+        return self._get_service_account_service()
+
+    def _get_service_account_service(self):
         if self._service is not None:
             return self._service
 
@@ -127,6 +130,8 @@ class GoogleDriveStorage:
         from googleapiclient.discovery import build
 
         sa_val = settings.google_sheets_service_account_json.strip()
+        if not sa_val:
+            raise ValueError("google_sheets_service_account_json not configured")
         if sa_val.startswith("{"):
             info = json.loads(sa_val)
             creds = Credentials.from_service_account_info(info, scopes=_DRIVE_SCOPES)
@@ -211,25 +216,51 @@ class GoogleDriveStorage:
         """
         Download a file from Google Drive by file_id to dest_path.
         Uses chunked media download via Google Drive API v3.
+        Tries user OAuth first and falls back to Service Account (or vice-versa)
+        so files uploaded under either account can always be restored.
         """
         from googleapiclient.http import MediaIoBaseDownload
 
-        service = self._get_service(channel=channel)
         dest_path = Path(dest_path)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
-        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
-        with open(dest_path, "wb") as fh:
-            downloader = MediaIoBaseDownload(fh, request, chunksize=10 * 1024 * 1024)
-            done = False
-            while not done:
-                status, done = downloader.next_chunk()
-                if status:
-                    pct = int(status.progress() * 100)
-                    logger.debug("Drive download %s: %d%% complete", file_id, pct)
+        services_to_try = []
+        try:
+            s_primary = self._get_service(channel=channel)
+            services_to_try.append(("primary", s_primary))
+        except Exception as p_err:
+            logger.debug("Drive primary service unavailable: %s", p_err)
 
-        logger.info("Drive download complete: id=%s -> path=%s", file_id, dest_path)
-        return dest_path
+        try:
+            s_sa = self._get_service_account_service()
+            if not any(s == s_sa for _, s in services_to_try):
+                services_to_try.append(("service_account", s_sa))
+        except Exception as sa_err:
+            logger.debug("Drive SA service unavailable: %s", sa_err)
+
+        last_exc: Exception | None = None
+        for svc_label, service in services_to_try:
+            try:
+                request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+                with open(dest_path, "wb") as fh:
+                    downloader = MediaIoBaseDownload(fh, request, chunksize=10 * 1024 * 1024)
+                    done = False
+                    while not done:
+                        status, done = downloader.next_chunk()
+                        if status:
+                            pct = int(status.progress() * 100)
+                            logger.debug("Drive download %s (%s): %d%% complete", file_id, svc_label, pct)
+
+                if dest_path.exists() and dest_path.stat().st_size > 0:
+                    logger.info("Drive download complete: id=%s (%s) -> path=%s (%d bytes)", file_id, svc_label, dest_path, dest_path.stat().st_size)
+                    return dest_path
+            except Exception as exc:
+                last_exc = exc
+                logger.warning("Drive download attempt (%s) failed for file_id %s: %s", svc_label, file_id, exc)
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError(f"Could not download Drive file {file_id}")
 
 
 # Module-level singleton — created once per process
