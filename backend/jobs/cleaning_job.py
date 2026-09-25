@@ -282,8 +282,13 @@ def get_next_cleanable_post_id() -> int | None:
         if not post:
             return None
 
-        # Pre-flight: check SSH is configured before picking the post
-        if not settings.worker_ssh_host or not settings.worker_ssh_host.strip():
+        # Check if watermark cleaning is enabled
+        from backend.models import AppSettings
+        clean_setting = db.query(AppSettings).filter(AppSettings.key == "clean_watermark_enabled").first()
+        cleaning_enabled = (clean_setting.value.lower() == "true") if clean_setting else True
+
+        # Pre-flight: check SSH is configured ONLY if watermark cleaning is enabled
+        if cleaning_enabled and (not settings.worker_ssh_host or not settings.worker_ssh_host.strip()):
             logger.error(
                 "[Cleaning] WORKER_SSH_HOST is not configured — post %s cannot be cleaned. "
                 "Set WORKER_SSH_HOST in Render environment variables.",
@@ -297,12 +302,22 @@ def get_next_cleanable_post_id() -> int | None:
                 db.commit()
             return None
 
-        # Pre-flight: check video file still exists on disk
+        # Pre-flight: check video file still exists on disk, or auto-restore from Google Drive
         p = db.get(Post, post.id)
         if p:
             video_path = p.video_path
-            if not video_path or not Path(video_path).exists():
-                # If Drive upload succeeded, video was archived — mark failed (file gone from disk)
+            from backend.services.watermark import ensure_video_file_on_disk
+            resolved_p = ensure_video_file_on_disk(
+                video_path,
+                is_clean=False,
+                drive_file_id=p.drive_file_id,
+                channel=p.channel,
+            )
+            if resolved_p and resolved_p.exists():
+                if str(resolved_p) != video_path:
+                    p.video_path = str(resolved_p)
+                    db.commit()
+            else:
                 logger.error(
                     "[Cleaning] Post %s video file not found: %s — marking failed",
                     post.id, video_path,
