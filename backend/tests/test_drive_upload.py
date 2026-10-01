@@ -150,9 +150,13 @@ class TestDriveUpload:
         with patch.object(storage, "_get_service", return_value=mock_service), \
              patch("googleapiclient.http.MediaIoBaseDownload") as mock_downloader_cls:
 
-            mock_downloader = MagicMock()
-            mock_downloader.next_chunk.return_value = (MagicMock(progress=lambda: 1.0), True)
-            mock_downloader_cls.return_value = mock_downloader
+            def fake_init(fh, req, chunksize=None):
+                fh.write(b"mock video data")
+                m = MagicMock()
+                m.next_chunk.return_value = (MagicMock(progress=lambda: 1.0), True)
+                return m
+
+            mock_downloader_cls.side_effect = fake_init
 
             res = storage.download("file_123", dest)
 

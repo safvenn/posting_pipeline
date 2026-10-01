@@ -39,6 +39,7 @@ dist/
 *.sqlite
 *.sqlite3
 pipeline.db
+*.db-journal
 
 # Storage & media files
 uploads/
@@ -62,3 +63,4 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+test_chrome_stealth_login.py

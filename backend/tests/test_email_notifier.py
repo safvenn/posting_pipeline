@@ -108,8 +108,9 @@ def test_notify_cookies_expired(mock_send):
     text = mock_send.call_args.kwargs["text_content"]
     html = mock_send.call_args.kwargs["html_content"]
 
-    assert "Google Flow Cookies Expired" in subject
+    assert "Google Flow Session Expired" in subject
     assert "#71" in subject
-    assert "python export_cookies.py" in text
-    assert "python export_cookies.py" in html
+    assert "create_profile.py" in text
+    assert "create_profile.py" in html
+    assert "refresh_auth.py" in text
     assert "the_indian_kitchen" in text

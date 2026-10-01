@@ -22,7 +22,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import paramiko
+try:
+    import paramiko
+    _ParamikoAuthException = paramiko.AuthenticationException
+    _ParamikoSSHException = paramiko.SSHException
+except ImportError:
+    paramiko = None
+    _ParamikoAuthException = type("_ParamikoAuthException", (Exception,), {})
+    _ParamikoSSHException = type("_ParamikoSSHException", (Exception,), {})
 
 from backend.config import settings
 from backend.database import SessionLocal
@@ -38,8 +45,10 @@ logger = logging.getLogger(__name__)
 import io
 
 
-def _ssh_client() -> paramiko.SSHClient:
+def _ssh_client():
     """Open an authenticated SSH connection to the worker."""
+    if paramiko is None:
+        raise RuntimeError("paramiko is required for SSH watermark removal but not installed")
     client = paramiko.SSHClient()
 
     # --- Host key verification ---
@@ -430,13 +439,13 @@ def remove_watermark(post_id: int, db: Session | None = None) -> None:
         else:
             logger.info("Post %s was deleted while cleaning completed, cleaning up local file", post_id)
 
-    except paramiko.AuthenticationException as exc:
+    except _ParamikoAuthException as exc:
         err = f"SSH auth failed: {exc}"
         logger.error("Post %s: %s", post_id, err)
         if p := db.get(Post, post_id):
             _set_status(db, p, "failed", err)
 
-    except paramiko.SSHException as exc:
+    except _ParamikoSSHException as exc:
         err = f"SSH error: {exc}"
         logger.error("Post %s: %s", post_id, err)
         if p := db.get(Post, post_id):

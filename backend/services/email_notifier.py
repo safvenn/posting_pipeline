@@ -133,28 +133,43 @@ def notify_cookies_expired(
     details: str = "",
 ) -> bool:
     """
-    Send an alert email when Google Flow session cookies expire.
+    Send an alert email when Google Flow session / persistent profile expires.
     """
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     row_info = f" (Sheet Row #{row_id})" if row_id else ""
 
-    subject = f"🚨 Action Required: Google Flow Cookies Expired{row_info}"
+    subject = f"\U0001f6a8 Action Required: Google Flow Session Expired{row_info}"
 
     text_body = f"""ALERT: Google Flow Session Expired
 
-Your automated YouTube worker on AWS EC2 encountered expired Google Flow cookies at {now_str}.
+Your automated YouTube worker on AWS EC2 encountered an expired Google Flow session at {now_str}.
 Channel: {channel}{row_info}
 
-WHAT TO DO:
+QUICK FIX (try this first — no laptop needed):
+  SSH into EC2 and run:
+    python /home/ubuntu/flow-worker/refresh_auth.py
+
+  This refreshes the auth JSON from your existing persistent profile.
+  Takes ~30 seconds. Then manually re-trigger the worker.
+
+IF THE QUICK FIX FAILS (full profile expired — needs laptop):
 1. Open a terminal on your laptop in:
-   c:\\\\Desktop\\\\youtube Aauto
+   c:\\\\Desktop\\\\youtube Aauto\\\\watermark-pipeline
 
-2. Run the export command:
-   python export_cookies.py
+2. Run the profile creator:
+   python create_profile.py
 
-3. That's it!
-   The script will extract your fresh browser cookies and automatically upload them to your EC2 worker (/home/ubuntu/flow_cookies.json).
-   Your next scheduled 9:00 AM IST daily run will automatically succeed.
+3. Log in to Google Flow in the browser window that opens.
+   Navigate all the way inside the Flow Studio.
+   Press Enter in the terminal when done.
+
+4. The script will automatically upload the new persistent profile to EC2.
+   Your next scheduled 9:00 AM IST daily run will succeed.
+
+SESSION LONGEVITY:
+  - Persistent profile (google_profile/): lasts MONTHS
+  - refresh_auth.py crontab (every 3 days): extends JSON snapshot automatically
+  - You should almost never need to run create_profile.py more than once per few months.
 
 Technical Error Details:
 {details or 'Session redirected to unauthenticated /about or login page.'}
@@ -166,27 +181,31 @@ Technical Error Details:
   <meta charset="utf-8">
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; color: #1e293b; padding: 24px; }}
-    .card {{ max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }}
+    .card {{ max-width: 620px; margin: 0 auto; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }}
     .header {{ background: #dc2626; color: #ffffff; padding: 20px 24px; }}
     .header h2 {{ margin: 0; font-size: 20px; font-weight: 700; }}
     .content {{ padding: 24px; }}
     .badge {{ display: inline-block; background: #fee2e2; color: #991b1b; padding: 4px 10px; border-radius: 9999px; font-size: 13px; font-weight: 600; margin-bottom: 16px; }}
+    .quick-fix {{ background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 16px 20px; margin: 16px 0; }}
+    .quick-fix h4 {{ margin: 0 0 8px; color: #15803d; font-size: 14px; }}
     .steps {{ background: #f1f5f9; border-radius: 8px; padding: 16px 20px; margin: 16px 0; }}
+    .steps h4 {{ margin-top: 0; margin-bottom: 10px; color: #0f172a; }}
     .steps ol {{ margin: 0; padding-left: 20px; }}
     .steps li {{ margin-bottom: 10px; line-height: 1.5; }}
-    code {{ background: #0f172a; color: #38bdf8; padding: 3px 8px; border-radius: 6px; font-family: Consolas, Monaco, monospace; font-size: 14px; }}
+    code {{ background: #0f172a; color: #38bdf8; padding: 3px 8px; border-radius: 6px; font-family: Consolas, Monaco, monospace; font-size: 13px; }}
+    .tip {{ font-size: 12px; color: #64748b; background: #f8fafc; border-left: 3px solid #cbd5e1; padding: 8px 12px; margin-top: 16px; border-radius: 0 4px 4px 0; }}
     .footer {{ font-size: 12px; color: #64748b; padding: 16px 24px; background: #f8fafc; border-top: 1px solid #e2e8f0; }}
   </style>
 </head>
 <body>
   <div class="card">
     <div class="header">
-      <h2>🚨 Action Required: Google Flow Cookies Expired</h2>
+      <h2>\U0001f6a8 Action Required: Google Flow Session Expired</h2>
     </div>
     <div class="content">
       <div class="badge">AWS EC2 Worker Notice</div>
-      <p>The automated video generator on your EC2 worker stopped because your Google Flow session expired.</p>
-      
+      <p>The automated video generator on your EC2 worker stopped because the Google Flow session expired.</p>
+
       <table style="width: 100%; border-collapse: collapse; margin-bottom: 16px;">
         <tr>
           <td style="padding: 6px 0; color: #64748b; font-size: 14px;"><strong>Channel:</strong></td>
@@ -202,21 +221,32 @@ Technical Error Details:
         </tr>
       </table>
 
+      <div class="quick-fix">
+        <h4>\u26a1 Quick Fix (no laptop needed — try this first):</h4>
+        <p style="margin: 0 0 8px; font-size: 14px;">SSH into EC2 and run:</p>
+        <code>python /home/ubuntu/flow-worker/refresh_auth.py</code>
+        <p style="margin: 8px 0 0; font-size: 13px; color: #166534;">This refreshes the auth JSON from your existing persistent profile (~30 seconds).</p>
+      </div>
+
       <div class="steps">
-        <h4 style="margin-top: 0; margin-bottom: 10px; color: #0f172a;">To fix this (takes ~15 seconds):</h4>
+        <h4>If the quick fix fails (profile fully expired — needs laptop):</h4>
         <ol>
-          <li>Open terminal on your laptop in <code>c:\\\\Desktop\\\\youtube Aauto</code></li>
-          <li>Run: <code>python export_cookies.py</code></li>
-          <li>The script will upload fresh cookies to EC2. The pipeline will automatically resume on the next run!</li>
+          <li>Open terminal in <code>c:\\\\Desktop\\\\youtube Aauto\\\\watermark-pipeline</code></li>
+          <li>Run: <code>python create_profile.py</code></li>
+          <li>Log in to Google Flow in the headed browser window that opens.</li>
+          <li>Navigate <em>inside the Flow Studio</em>, then press <strong>Enter</strong> in the terminal.</li>
+          <li>The script uploads everything to EC2 automatically.</li>
         </ol>
       </div>
 
-      <p style="font-size: 13px; color: #64748b; margin-top: 20px;">
-        <em>Note: Cookies usually stay valid for weeks to months. You only receive this alert when Google requires re-authentication.</em>
-      </p>
+      <div class="tip">
+        <strong>Session longevity:</strong> The persistent profile (google_profile/) lasts months.
+        The EC2 crontab runs <code>refresh_auth.py</code> every 3 days automatically to keep the
+        JSON snapshot fresh. You should rarely need to run create_profile.py.
+      </div>
     </div>
     <div class="footer">
-      YouTube Auto Pipeline • AWS EC2 Worker Alert System
+      YouTube Auto Pipeline \u2022 AWS EC2 Worker Alert System
     </div>
   </div>
 </body>

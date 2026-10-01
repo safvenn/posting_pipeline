@@ -16,8 +16,10 @@ set -euo pipefail
 WORKER_DIR="/home/ubuntu/flow-worker"
 VENV_DIR="${WORKER_DIR}/venv"
 VIDEOS_DIR="/tmp/flow_videos"
-COOKIE_PATH="/home/ubuntu/flow_cookies.json"
+AUTH_FILE_PATH="/home/ubuntu/flow_studio_auth.json"
+PROFILE_DIR_PATH="/home/ubuntu/google_profile"
 CRON_SCHEDULE="30 3,5,6 * * *"   # 03:30, 05:30, 06:30 UTC = 09:00 AM, 11:00 AM, 12:00 PM IST (Asia/Kolkata)
+REFRESH_SCHEDULE="0 3 */3 * *"   # Every 3 days at 03:00 UTC = 08:30 AM IST (auto-refreshes flow_studio_auth.json)
 
 echo "======================================================================"
 echo "🚀 Setting up Autonomous Google Flow Worker on AWS EC2"
@@ -107,7 +109,8 @@ if ! flock -n 200; then
     exit 0
 fi
 
-export FLOW_COOKIE_FILE="${FLOW_COOKIE_FILE:-/home/ubuntu/flow_cookies.json}"
+export FLOW_AUTH_FILE="${FLOW_AUTH_FILE:-/home/ubuntu/flow_studio_auth.json}"
+export FLOW_PROFILE_DIR="${FLOW_PROFILE_DIR:-/home/ubuntu/google_profile}"
 export FLOW_DOWNLOAD_DIR="${FLOW_DOWNLOAD_DIR:-/tmp/flow_videos}"
 export PIPELINE_URL="${PIPELINE_URL:-https://posting-pipeline.onrender.com}"
 
@@ -142,10 +145,16 @@ PIPELINE_URL=https://posting-pipeline.onrender.com
 API_KEY=
 CHANNEL=the_indian_kitchen
 MAX_VIDEOS=1
-FLOW_COOKIE_FILE=/home/ubuntu/flow_cookies.json
+FLOW_AUTH_FILE=/home/ubuntu/flow_studio_auth.json
+FLOW_PROFILE_DIR=/home/ubuntu/google_profile
 FLOW_DOWNLOAD_DIR=/tmp/flow_videos
 
-# Email Alert Settings (sent when Google Flow cookies expire)
+# Autonomous Google Flow Login (Zero-Cookie / Zero-Laptop)
+FEMAIL=
+FPASS=
+FTOTP_SECRET=
+
+# Email Alert Settings (sent when Google Flow session expires)
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=
@@ -156,7 +165,7 @@ EOF
 fi
 
 # ------------------------------------------------------------------------------
-# 6. Configure Daily Cron Jobs & Pre-warm Pings (09:00 AM, 11:00 AM, 12:00 PM IST)
+# 6. Configure Daily Cron Jobs, Auto-Refresh & Pre-warm Pings
 # ------------------------------------------------------------------------------
 sudo systemctl enable cron
 sudo systemctl start cron
@@ -165,20 +174,24 @@ sudo systemctl start cron
 WARMUP_SCHEDULE="28 3,5,6 * * *"  # 03:28, 05:28, 06:28 UTC = 08:58, 10:58, 11:58 AM IST
 WARMUP_CMD="${WARMUP_SCHEDULE} curl -s -m 90 https://posting-pipeline.onrender.com/api/health >/dev/null 2>&1"
 CRON_CMD="${CRON_SCHEDULE} ${RUNNER_SCRIPT} >> ${WORKER_DIR}/cron.log 2>&1"
+# Auto-refresh flow_studio_auth.json from persistent profile every 3 days at 03:00 UTC (08:30 AM IST)
+REFRESH_CMD="${REFRESH_SCHEDULE} cd ${WORKER_DIR} && ${VENV_DIR}/bin/python refresh_auth.py >> ${WORKER_DIR}/refresh_auth.log 2>&1"
 
 EXISTING_CRON=$(crontab -l 2>/dev/null || true)
-FILTERED_CRON=$(echo "${EXISTING_CRON}" | grep -v "run_daily.sh" | grep -v "api/health" || true)
-printf "%s\n%s\n%s\n" "${FILTERED_CRON}" "${WARMUP_CMD}" "${CRON_CMD}" | sed '/^$/d' | crontab -
+FILTERED_CRON=$(echo "${EXISTING_CRON}" | grep -v "run_daily.sh" | grep -v "api/health" | grep -v "refresh_auth.py" || true)
+printf "%s\n%s\n%s\n%s\n" "${FILTERED_CRON}" "${WARMUP_CMD}" "${REFRESH_CMD}" "${CRON_CMD}" | sed '/^$/d' | crontab -
 
-echo "✅ Cron & Warmup configured for 09:00 AM, 11:00 AM, 12:00 PM IST (03:30, 05:30, 06:30 UTC):"
-crontab -l | grep -E "run_daily.sh|api/health"
+echo "✅ Cron, Auto-Refresh & Warmup configured:"
+crontab -l | grep -E "run_daily.sh|api/health|refresh_auth"
 
 echo "======================================================================"
 echo "🎉 AWS Worker Setup Complete!"
 echo "======================================================================"
 echo "Next steps:"
-echo "1. On your laptop, export cookies: python export_cookies.py"
-echo "2. Copy flow_cookies.json to: ${COOKIE_PATH}"
-echo "3. Copy flow_playwright.py, auto_generate_worker.py & email_notifier.py to: ${WORKER_DIR}/"
-echo "4. Test manually anytime on AWS with: ${RUNNER_SCRIPT}"
+echo "1. On your laptop, create persistent profile: python create_profile.py"
+echo "   (Captures persistent session & uploads flow_studio_auth.json + google_profile/ to EC2)"
+echo "2. Copy worker scripts to: ${WORKER_DIR}/"
+echo "   scp -i <key.pem> flow_playwright.py auto_generate_worker.py email_notifier.py refresh_auth.py ubuntu@<ec2-ip>:${WORKER_DIR}/"
+echo "3. Test manually anytime on AWS with: ${RUNNER_SCRIPT}"
+echo "4. Quick manual auth refresh on AWS: cd ${WORKER_DIR} && ${VENV_DIR}/bin/python refresh_auth.py"
 echo "======================================================================"

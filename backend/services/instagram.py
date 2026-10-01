@@ -447,8 +447,16 @@ def fetch_media_permalink(media_id: str, access_token: str) -> Optional[str]:
 def resolve_post_video_url(post: Post) -> Optional[str]:
     """
     Resolve public HTTPS video URL for a post if backend has a public domain (e.g. Render).
-    This URL is accessible by Instagram's crawler even after local file is gone.
+    Only returns a URL if the video file actually exists on disk or has a Drive backup.
     """
+    from backend.services.watermark import resolve_video_path
+    video_p = resolve_video_path(post.clean_video_path, is_clean=True)
+    if not (video_p and video_p.exists()):
+        video_p = resolve_video_path(post.video_path, is_clean=False)
+    has_file = (video_p and video_p.exists()) or bool(getattr(post, "clean_drive_file_id", None)) or bool(getattr(post, "drive_file_id", None))
+    if not has_file:
+        return None
+
     from backend.config import settings
     public_base = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("BACKEND_PUBLIC_URL") or getattr(settings, "backend_public_url", "")
     if public_base and public_base.strip():
@@ -529,8 +537,8 @@ def pre_create_instagram_container(post: Post, db: Session) -> Optional[str]:
     # Try public URL first (preferred: no binary upload needed)
     video_url = resolve_post_video_url(post)
 
-    if not video_path:
-        logger.debug("[Instagram] Pre-create skipped: no video file for post %s", post.id)
+    if not video_path and not video_url:
+        logger.debug("[Instagram] Pre-create skipped: no video file or public URL for post %s", post.id)
         return None
 
     caption = format_instagram_caption(
@@ -583,9 +591,12 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
     End-to-end publishing pipeline for Instagram Reels:
     1. Check if channel has Instagram enabled and valid credentials.
     2. Build caption and format hashtags.
-    3. Upload video (via public URL or resumable binary) and poll container.
-    4. Publish Reel and record permalink on post.
+    3. Strategy A: If container_id was pre-created, publish it immediately (no video file needed!).
+    4. Strategy B: If container missing or expired, locate video (disk / Drive) and create new container.
+    5. On permanent failure (max retries reached or unrecoverable), mark permanently_failed.
     """
+    MAX_RETRIES = 3
+
     # Find channel config
     ch = db.query(ChannelConfig).filter(ChannelConfig.key == post.channel).first()
     if not ch or not ch.instagram_enabled:
@@ -601,11 +612,63 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
 
     if not account_id or not access_token:
         err = "Instagram Account ID or Access Token is missing in Channel Config."
-        post.instagram_status = "failed"
+        post.retry_count = (post.retry_count or 0) + 1
+        post.instagram_status = "permanently_failed" if (post.retry_count >= MAX_RETRIES) else "failed"
         post.instagram_error = err
+        post.updated_at = datetime.now(timezone.utc)
         db.commit()
         return {"success": False, "error": err}
 
+    caption = format_instagram_caption(
+        title=post.enriched_title or post.title or "",
+        description=post.enriched_description or post.description or "",
+        tags=post.enriched_tags or post.tags or "",
+    )
+
+    # --- Strategy A: Use pre-created container_id directly if available ---
+    container_id = post.instagram_container_id
+    if container_id:
+        logger.info(
+            "[Instagram] Post %s: attempting publish via pre-created container %s (no video file required)",
+            post.id, container_id,
+        )
+        try:
+            is_ready = wait_for_container_ready(
+                container_id=container_id,
+                access_token=access_token,
+                max_wait_seconds=60,
+                poll_interval=5,
+            )
+            if is_ready:
+                media_id = publish_container(
+                    account_id=account_id,
+                    access_token=access_token,
+                    container_id=container_id,
+                )
+                permalink = fetch_media_permalink(media_id=media_id, access_token=access_token) or f"https://www.instagram.com/reel/{media_id}/"
+
+                post.instagram_media_id = media_id
+                post.instagram_post_url = permalink
+                post.instagram_status = "published"
+                post.instagram_error = None
+                post.updated_at = datetime.now(timezone.utc)
+                db.commit()
+
+                logger.info("[Instagram] ✓ Successfully published Reel via pre-created container for post %s: %s", post.id, permalink)
+                return {
+                    "success": True,
+                    "media_id": media_id,
+                    "permalink": permalink,
+                }
+        except Exception as container_exc:
+            logger.warning(
+                "[Instagram] Pre-created container %s invalid/expired for post %s: %s — falling back to Strategy B (video upload)",
+                container_id, post.id, container_exc,
+            )
+            post.instagram_container_id = None
+            db.commit()
+
+    # --- Strategy B: Locate video file and create a new container ---
     from backend.services.watermark import resolve_video_path
     video_p = resolve_video_path(post.clean_video_path, is_clean=True)
 
@@ -646,89 +709,63 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
 
     video_path = str(video_p) if video_p and video_p.exists() else None
 
-    # Fail fast if video file is missing on disk AND Drive
-    if not video_path:
-        err = f"Video file for post #{post.id} is no longer available on disk or Google Drive. Please re-upload the video."
-        post.instagram_status = "failed"
-        post.instagram_error = err
-        db.commit()
-        return {"success": False, "error": err}
-
     # Determine video_url
     video_url = video_url_override or resolve_post_video_url(post)
 
-    # If using Instagram User Token (IGAA...), video_url is required
-    if access_token.startswith("IG") and not video_url:
-        err = f"Video file not found for post {post.id} and no public URL is available."
-        post.instagram_status = "failed"
+    # Fail if video file is missing on disk AND Drive AND no public URL
+    if not video_path and not video_url:
+        err = f"Video file for post #{post.id} is no longer available on disk or Google Drive. Please re-upload the video."
+        post.retry_count = (post.retry_count or 0) + 1
+        post.instagram_status = "permanently_failed" if (post.retry_count >= MAX_RETRIES) else "failed"
         post.instagram_error = err
+        post.updated_at = datetime.now(timezone.utc)
         db.commit()
         return {"success": False, "error": err}
 
-    caption = format_instagram_caption(
-        title=post.enriched_title or post.title or "",
-        description=post.enriched_description or post.description or "",
-        tags=post.enriched_tags or post.tags or "",
-    )
+    # If using Instagram User Token (IGAA...), public video_url is required
+    if access_token.startswith("IG") and not video_url:
+        err = f"Video file not found for post {post.id} and no public URL is available."
+        post.retry_count = (post.retry_count or 0) + 1
+        post.instagram_status = "permanently_failed" if (post.retry_count >= MAX_RETRIES) else "failed"
+        post.instagram_error = err
+        post.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"success": False, "error": err}
 
     try:
         post.instagram_status = "pending"
         post.instagram_error = None
         db.commit()
 
-        # --- Strategy A: use pre-created container_id (no video upload needed) ---
-        container_id = post.instagram_container_id
-        if container_id:
-            logger.info(
-                "[Instagram] Using pre-created container %s for post %s",
-                container_id, post.id,
-            )
-            # Verify container is still valid
-            try:
-                is_ready = wait_for_container_ready(
-                    container_id=container_id,
-                    access_token=access_token,
-                    max_wait_seconds=60,
-                    poll_interval=5,
-                )
-            except Exception as container_exc:
-                logger.warning(
-                    "[Instagram] Pre-created container %s invalid for post %s: %s — falling through to re-create",
-                    container_id, post.id, container_exc,
-                )
-                container_id = None  # fall through to re-create
+        container_data = create_reels_container(
+            account_id=account_id,
+            access_token=access_token,
+            caption=caption,
+            video_path=video_path if not video_url else None,
+            video_url=video_url,
+        )
+        new_container_id = container_data["id"]
+        upload_uri = container_data.get("uri")
 
-        # --- Strategy B: create container now (file or public URL) ---
-        if not container_id:
-            container_data = create_reels_container(
-                account_id=account_id,
+        # Upload video binary if resumable upload uri provided
+        if upload_uri and video_path and os.path.exists(video_path):
+            upload_video_resumable(
+                upload_uri=upload_uri,
                 access_token=access_token,
-                caption=caption,
-                video_path=video_path if not video_url else None,
-                video_url=video_url,
+                video_path=video_path,
             )
-            container_id = container_data["id"]
-            upload_uri = container_data.get("uri")
 
-            # Step 1b: Upload video binary if resumable upload uri provided
-            if upload_uri and video_path and os.path.exists(video_path):
-                upload_video_resumable(
-                    upload_uri=upload_uri,
-                    access_token=access_token,
-                    video_path=video_path,
-                )
+        # Poll container status
+        wait_for_container_ready(container_id=new_container_id, access_token=access_token)
 
-            # Step 2: Poll container status
-            wait_for_container_ready(container_id=container_id, access_token=access_token)
-
-        # Step 3: Publish Reel
+        # Publish Reel
         media_id = publish_container(
             account_id=account_id,
             access_token=access_token,
-            container_id=container_id,
+            container_id=new_container_id,
         )
 
-        # Step 4: Fetch permalink
+        # Fetch permalink
         permalink = fetch_media_permalink(media_id=media_id, access_token=access_token) or f"https://www.instagram.com/reel/{media_id}/"
 
         # Update Post record
@@ -736,6 +773,7 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
         post.instagram_post_url = permalink
         post.instagram_status = "published"
         post.instagram_error = None
+        post.updated_at = datetime.now(timezone.utc)
         db.commit()
 
         logger.info("Successfully published Reel for Post %s: %s", post.id, permalink)
@@ -746,7 +784,8 @@ def publish_reel_for_post(post: Post, db: Session, video_url_override: Optional[
         }
     except Exception as exc:
         logger.error("Failed to publish Instagram Reel for Post %s: %s", post.id, exc)
-        post.instagram_status = "failed"
+        post.retry_count = (post.retry_count or 0) + 1
+        post.instagram_status = "permanently_failed" if (post.retry_count >= MAX_RETRIES) else "failed"
         post.instagram_error = str(exc)
         post.updated_at = datetime.now(timezone.utc)
         db.commit()

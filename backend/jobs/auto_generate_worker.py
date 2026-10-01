@@ -347,18 +347,21 @@ def run_worker_batch(
     logger.info("Max Videos:   %d", max_videos)
     logger.info("=" * 60)
 
-    # 1. Cookie pre-flight check
+    # 1. Session / Credential pre-flight check
     if not check_cookies_exist():
         logger.error(
-            "Google Flow cookies not found! Video generation cannot proceed."
+            "Google Flow session and credentials not found! Video generation cannot proceed."
         )
         logger.error(
-            "Please run 'python export_cookies.py' on your laptop and transfer flow_cookies.json."
+            "Autonomous fix: Set FEMAIL, FPASS (and optional FTOTP_SECRET) in /home/ubuntu/flow-worker/.env"
+        )
+        logger.error(
+            "Alternative fix: Run create_profile.py on laptop or python refresh_auth.py on EC2."
         )
         try:
-            notify_cookies_expired(channel=channel, details="Cookie file is missing on EC2 worker.")
+            notify_cookies_expired(channel=channel, details="Google Flow session and credentials missing on EC2 worker.")
         except Exception as notify_err:
-            logger.debug("Failed to send missing cookie notification: %s", notify_err)
+            logger.debug("Failed to send missing session notification: %s", notify_err)
         return -1
 
     client = PipelineClient(base_url=pipeline_url, api_key=api_key)
