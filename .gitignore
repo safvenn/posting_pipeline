@@ -64,3 +64,10 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 test_chrome_stealth_login.py
+
+# One-off / scratch scripts — never commit these
+FIX_PLAN.md
+scratch_query.py
+create_profile.py
+migrate_sqlite_to_supabase.py
+refresh_auth.py
