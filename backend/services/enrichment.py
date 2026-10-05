@@ -51,7 +51,7 @@ _SEO_POOL_CHANNEL_B = (
 _SYSTEM_MESSAGE = (
     "You are an elite, top-tier YouTube Shorts & Reels Content Creator and Viral SEO Specialist. "
     "Your mission is to produce human-crafted, high-CTR, algorithmically boosted metadata tailored specifically "
-    "to the unique dish and action in the video. "
+    "to the unique subject and action in the video. "
     "CRITICAL: Avoid generic bot-like titles. Vary your title styles dynamically across posts. "
     "Follow all scheduling and content rules strictly. "
     "Always respond with valid JSON only — no Markdown, no explanations, no code fences."
@@ -78,11 +78,26 @@ def _build_prompt(
     except Exception:
         pass
 
-    if not seo_pool:
-        seo_pool = _SEO_POOL_CHANNEL_A if channel == "channel_a" else _SEO_POOL_CHANNEL_B
-
     channel_name = channel_details.get("snippet", {}).get("title", channel)
-    subscribe_cta_example = f"🔔 Subscribe to {channel_name} for daily satisfying miniature cooking adventures!"
+    if not seo_pool:
+        if channel == "channel_a":
+            seo_pool = _SEO_POOL_CHANNEL_A
+        elif channel == "channel_b":
+            seo_pool = _SEO_POOL_CHANNEL_B
+        else:
+            seo_pool = "shorts"
+
+    # Ground every channel in its selected row, rather than guessing a genre
+    # from a channel name or applying another channel's examples.
+    subscribe_cta_example = f"🔔 Subscribe to {channel_name} for more videos!"
+    hook_style_matrix = """     • Focus on the exact subject and action described in the selected row.
+     • Use a factual detail or a relevant question supported by that row.
+     • Do not invent a setting, scale, technique, resolution, or real-world claim."""
+    desc_layer1 = "2–3 concise sentences grounded in the selected row's prompt, title, and description."
+    desc_layer2 = "Use search phrases only when they accurately describe the selected content."
+    desc_layer5 = "Use #shorts and relevant hashtags derived from the selected row only."
+    tags_example = '["shorts"]'
+    first_comment_example = '"What stood out to you in this video? Share your thoughts below! 👇"'
 
     recent_titles_sample = [v.get("snippet", {}).get("title", "") for v in recent_videos[:8] if v.get("snippet", {}).get("title")]
 
@@ -93,6 +108,7 @@ def _build_prompt(
 SELECTION INSTRUCTION:
 - You MUST enrich and generate optimized metadata specifically for the TARGET ROW above (ID: {target_row.get('id')}).
 - Extract and utilize its exact `id`, `title`, `description`, and `tags`.
+- Use its `prompt` as the content description. Preserve its subject and action; channel branding and recent uploads must not override that content.
 - In your JSON response, set `"id": {json.dumps(target_row.get('id'))}`."""
     else:
         row_context_section = f"""GOOGLE SHEET ROWS (find and process ONLY the first unscheduled row):
@@ -120,27 +136,21 @@ VIRAL TITLE & CONTENT GENERATION RULES (CREATIVE, VARIED & HUMAN HOOKS)
 ══════════════════════════════════════════════════════════════════════════════════
 
 1. ANTI-REPETITION & TITLE DIVERSITY (CRITICAL):
-   - NEVER repeat the same opening phrase (e.g. do NOT use "World's Tiniest..." or "Satisfying Tiny..." for every video).
+   - NEVER repeat the same opening phrase across videos.
    - Analyze recent upload titles above and pick a FRESH, DISTINCT hook angle from the style matrix below:
-     • Style A (Sensory / Sizzle Hook): "The Sizzle On This Mini [Dish]! ASMR Cooking #shorts"
-     • Style B (Curiosity / Question Hook): "Would You Try Making [Dish] On A Micro Clay Stove? #shorts"
-     • Style C (Extreme Detail / Scale Hook): "Every Single Detail Of [Dish] In 1:12 Miniature! #shorts"
-     • Style D (Street Food Vibe Hook): "Midnight Mini Street Food: Crispy [Dish] Sizzle #shorts"
-     • Style E (Hypnotic / Relaxing Hook): "Oddly Relaxing [Dish] Preparation On Tiny Fire 🔥 #shorts"
-     • Style F (Crunch & Texture Hook): "Wait For That Golden [Dish] Crunch! ASMR #shorts"
-     • Style G (Challenge / Reaction Hook): "Cooking Authentic [Dish] For Ants?! Tiny Kitchen #shorts"
-   - Length: 50–70 characters. High punchiness, emotional trigger, exact dish name, and ends with "#shorts".
+{hook_style_matrix}
+   - Length: 50–70 characters. High punchiness, emotional trigger, exact subject name, and ends with "#shorts".
 
 2. ENGAGEMENT-BOOSTED DESCRIPTION (Multi-Layered Viral Structure):
-   - Layer 1 (Sensory Storytelling): 2–3 mouthwatering sentences describing the authentic sizzling aroma, spice pop, and micro cookware precision.
-   - Layer 2 (Search Keyword SEO): Natural injection of high-search phrases (e.g., "authentic miniature Indian cooking ASMR", "relaxing kitchen sounds", "satisfying tiny food preparation").
-   - Layer 3 (Comment Driving Question): Interactive question tailored specifically to the dish (e.g. "Rate this tiny [dish] from 1–10! 😋👇 What should we shrink next?").
+   - Layer 1 (Visual Storytelling): {desc_layer1}
+   - Layer 2 (Search Keyword SEO): {desc_layer2}
+   - Layer 3 (Comment Driving Question): Interactive question tailored specifically to the subject.
    - Layer 4 (Channel Subscribe CTA): "{subscribe_cta_example}"
-   - Layer 5 (Hashtags): 6–8 curated hashtags (#shorts #miniaturecooking #tinyfood #asmrcooking #indianfood #satisfying #foodie #[dishname]).
+   - Layer 5 (Hashtags): {desc_layer5}
 
 3. HIGH-REACH SEO TAGS:
-   - Merge the dish tags with high-intent keywords from: {seo_pool}.
-   - Return a clean array of 15–20 distinct tags (dish-specific, genre-specific, and broad Shorts tags).
+   - Consider these channel keywords only when relevant to this selected row: {seo_pool}.
+   - Return up to 20 distinct relevant tags. Never pad the list with unrelated subjects.
 
 4. PINNED FIRST COMMENT (Interactive Reply Catalyst):
    - Short (under 160 characters), engaging question with 1 emoji to spark lively comment section discussions.
@@ -155,10 +165,10 @@ OUTPUT FORMAT (STRICT VALID JSON ONLY - NO CODE FENCES - NO MARKDOWN):
 ══════════════════════════════════════════════════════════════════════════════════
 {{
   "id": "{target_row.get('id') if target_row else 1}",
-  "title": "Distinctive Viral Title Tailored To The Dish #shorts",
+  "title": "Distinctive Viral Title Tailored To The Subject #shorts",
   "description": "Sensory-rich description with keywords, engagement question, CTA, and #hashtags",
-  "tags": ["miniature cooking", "tiny food", "asmr cooking", "indian food asmr", "shorts"],
-  "firstComment": "What miniature dish should we cook next? Top voted comment wins! 👩‍🍳👇",
+  "tags": {tags_example},
+  "firstComment": {first_comment_example},
   "date": "YYYY-MM-DDTHH:MM:SS+05:30"
 }}
 - Date must always be formatted as 'YYYY-MM-DDTHH:MM:SS+05:30', strictly inside Slot A or Slot B, strictly in the future."""

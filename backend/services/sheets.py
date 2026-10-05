@@ -85,23 +85,19 @@ def _extract_sheet_id(val: str) -> str:
     return val
 
 
-def _sheet(channel: str) -> gspread.Worksheet:
-    """Return the worksheet for the given channel."""
-    gc = _gc()
+def _resolve_sheet_config(channel: str) -> tuple[str, Optional[str]]:
+    """Resolve sheet_id and sheet_tab strictly for the given channel without cross-channel leakage."""
     sheet_id = None
     tab_name = None
 
     # Check DB ChannelConfig first
-    try:
-        from backend.database import SessionLocal
-        from backend.models import ChannelConfig
-        with SessionLocal() as db:
-            cfg = db.query(ChannelConfig).filter(ChannelConfig.key == channel, ChannelConfig.is_active == True).first()
-            if cfg and cfg.sheet_id:
-                sheet_id = cfg.sheet_id
-                tab_name = cfg.sheet_tab
-    except Exception as exc:
-        logger.debug("ChannelConfig DB lookup for sheet skipped: %s", exc)
+    from backend.database import SessionLocal
+    from backend.models import ChannelConfig
+    with SessionLocal() as db:
+        cfg = db.query(ChannelConfig).filter(ChannelConfig.key == channel, ChannelConfig.is_active == True).first()
+        if cfg and cfg.sheet_id:
+            sheet_id = cfg.sheet_id
+            tab_name = cfg.sheet_tab
 
     if not sheet_id:
         if channel == "channel_a":
@@ -110,15 +106,20 @@ def _sheet(channel: str) -> gspread.Worksheet:
         elif channel == "channel_b":
             sheet_id = settings.google_sheets_id_channel_b
             tab_name = settings.google_sheets_tab_channel_b
-        elif settings.google_sheets_id_channel_a:
-            sheet_id = settings.google_sheets_id_channel_a
-            tab_name = settings.google_sheets_tab_channel_a
 
     if not sheet_id:
         raise ValueError(
             f"Google Sheet ID not configured for channel '{channel}'. "
             "Please configure the Sheet ID in Channel Settings."
         )
+
+    return sheet_id, tab_name
+
+
+def _sheet(channel: str) -> gspread.Worksheet:
+    """Return the worksheet for the given channel."""
+    sheet_id, tab_name = _resolve_sheet_config(channel)
+    gc = _gc()
 
     clean_id = _extract_sheet_id(sheet_id)
     sh = gc.open_by_key(clean_id)
@@ -127,22 +128,9 @@ def _sheet(channel: str) -> gspread.Worksheet:
 
 def get_all_rows(channel: str) -> list[dict]:
     """Return all rows as list of dicts (header row as keys)."""
-    # Check if channel configured with a published CSV URL
-    sheet_id = None
-    try:
-        from backend.database import SessionLocal
-        from backend.models import ChannelConfig
-        with SessionLocal() as db:
-            cfg = db.query(ChannelConfig).filter(ChannelConfig.key == channel, ChannelConfig.is_active == True).first()
-            if cfg and cfg.sheet_id:
-                sheet_id = cfg.sheet_id
-    except Exception:
-        pass
+    sheet_id, _ = _resolve_sheet_config(channel)
 
-    if not sheet_id and settings.google_sheets_id_channel_a:
-        sheet_id = settings.google_sheets_id_channel_a
-
-    # Fallback to direct HTTP fetch if a published CSV URL is provided
+    # Fallback to direct HTTP fetch if a published CSV URL is provided for this channel
     if sheet_id and ("pub?output=csv" in sheet_id or "pub?gid=" in sheet_id or "/d/e/2PACX-" in sheet_id):
         try:
             resp = httpx.get(sheet_id, timeout=15.0, follow_redirects=True)

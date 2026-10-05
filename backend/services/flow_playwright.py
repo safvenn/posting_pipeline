@@ -70,6 +70,35 @@ PROFILE_DIR = Path(os.getenv("FLOW_PROFILE_DIR", "/home/ubuntu/google_profile"))
 # Google Flow URL — public landing page
 FLOW_URL = "https://flow.google.com/"
 
+# Project canvas mapping per channel (dedicated isolated canvas for each channel)
+DEFAULT_FLOW_PROJECTS = {
+    "the_indian_kitchen": "https://flow.google.com/project/60ee3db3-fe92-496e-b927-947012635bd5",
+    "sky_keepers": "https://flow.google.com/project/3df06608-ec70-42fa-a5ea-d190a44a2016",
+}
+
+
+def get_flow_project_url(channel: Optional[str] = None) -> Optional[str]:
+    """Get the Google Flow dedicated project URL for a channel.
+
+    Checks environment variable FLOW_PROJECT_<CHANNEL> (e.g. FLOW_PROJECT_SKY_KEEPERS)
+    first, then falls back to DEFAULT_FLOW_PROJECTS.
+    """
+    if not channel:
+        return os.getenv("FLOW_PROJECT_URL")
+    normalized = channel.strip().lower().replace(" ", "_").replace("-", "_")
+    env_key = f"FLOW_PROJECT_{normalized.upper()}"
+    val = os.getenv(env_key) or os.getenv(f"FLOW_PROJECT_URL_{normalized.upper()}")
+    if val:
+        return val.strip()
+    project = DEFAULT_FLOW_PROJECTS.get(normalized)
+    if project:
+        return project
+    raise FlowError(
+        f"No dedicated Flow project configured for channel '{channel}'. "
+        f"Set {env_key} before generating videos for this channel."
+    )
+
+
 # Where downloaded videos land before being POSTed to the pipeline
 DOWNLOAD_DIR = Path(os.getenv("FLOW_DOWNLOAD_DIR", "/tmp/flow_videos"))
 
@@ -81,8 +110,9 @@ GENERATE_CLICK_TIMEOUT_MS = 10_000
 VIDEO_READY_TIMEOUT_MS = 300_000   # 5 min — video generation can take a while
 DOWNLOAD_TIMEOUT_MS = 120_000
 
-# Safety: maximum prompt length to prevent DOM injection / prompt stuffing
+# Safety limits
 MAX_PROMPT_LEN = 4000
+MAX_VIDEO_BYTES = 1024 * 1024 * 1024  # 1 GB cap; test ns can override with smaller value
 
 
 class FlowError(Exception):
@@ -336,18 +366,20 @@ def _auto_login_google(pw: Playwright, headless: bool = True) -> BrowserContext:
 
 def generate_video(
     prompt: str,
+    channel: Optional[str] = None,
     output_dir: Optional[Path] = None,
     headless: bool = True,
 ) -> Path:
     """
     Open Google Flow, type `prompt`, wait for video, download it.
     Self-healing: automatically performs autonomous login if session is expired/missing.
+    Routes to channel-specific Flow project canvas if channel is specified.
     """
     prompt = _sanitize_prompt(prompt)
     dest_dir = output_dir or DOWNLOAD_DIR
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("[Flow] Starting Playwright. prompt=%r", prompt[:60])
+    logger.info("[Flow] Starting Playwright. channel=%s prompt=%r", channel, prompt[:60])
 
     pw = sync_playwright().start()
     try:
@@ -363,7 +395,7 @@ def generate_video(
 
         try:
             try:
-                video_path = _run_flow_session(ctx, prompt, dest_dir)
+                video_path = _run_flow_session(ctx, prompt, dest_dir, channel=channel)
             except FlowSessionExpiredError as session_err:
                 email, password, _ = _get_google_credentials()
                 if email and password:
@@ -373,7 +405,7 @@ def generate_video(
                     except Exception:
                         pass
                     ctx = _auto_login_google(pw, headless=headless)
-                    video_path = _run_flow_session(ctx, prompt, dest_dir)
+                    video_path = _run_flow_session(ctx, prompt, dest_dir, channel=channel)
                 else:
                     raise session_err
         except PWTimeoutError as exc:
@@ -417,11 +449,32 @@ def _launch_browser(pw: Playwright, headless: bool) -> BrowserContext:
     """
     Launch Chromium with Flow studio authentication.
 
-    Priority:
-    1. storage_state JSON (flow_studio_auth.json) — has OSID/LSID studio cookies
-    2. Persistent profile directory (google_profile/) — fallback
-    3. Autonomous login via FEMAIL / FPASS / FTOTP_SECRET
+    Priority 0: Always-on Chrome Daemon via CDP (port 9222).
+       Connects to the live google-chrome-stable launched by start_desktop.sh.
+       Already logged in; session stays valid as long as Chrome is running.
+    Priority 1: storage_state JSON (flow_studio_auth.json)
+    Priority 2: Persistent profile directory (google_profile/)
+    Priority 3: Autonomous login via FEMAIL / FPASS / FTOTP_SECRET
     """
+    # Priority 0: connect to always-on Chrome via CDP
+    try:
+        browser = pw.chromium.connect_over_cdp("http://127.0.0.1:9222")
+        if browser.contexts:
+            ctx = browser.contexts[0]
+            pages = ctx.pages
+            if pages:
+                url = pages[0].url
+                if "accounts.google.com" not in url and "signin" not in url.lower():
+                    logger.info("[Flow] ✅ Connected to live Chrome on port 9222 (URL: %s)", url[:80])
+                    return ctx
+                logger.warning("[Flow] Live Chrome tab is on login page (%s). Falling back.", url[:60])
+            else:
+                logger.info("[Flow] Connected to Chrome daemon (no open pages); using context.")
+                return ctx
+        logger.debug("[Flow] Chrome daemon reachable but no contexts; falling back.")
+    except Exception as _cdp_exc:
+        logger.debug("[Flow] CDP port 9222 not reachable, falling back: %s", _cdp_exc)
+
     common_args = [
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -432,7 +485,7 @@ def _launch_browser(pw: Playwright, headless: bool) -> BrowserContext:
         "--no-default-browser-check",
     ]
 
-    # Priority 1: storage_state JSON (preferred — captured from inside studio)
+    # Priority 1: storage_state JSON (flow_studio_auth.json) — fresh session exported from studio
     if AUTH_FILE.exists() and AUTH_FILE.stat().st_size > 100:
         logger.info("[Flow] Using storage state auth: %s", AUTH_FILE)
         browser = pw.chromium.launch(
@@ -443,9 +496,9 @@ def _launch_browser(pw: Playwright, headless: bool) -> BrowserContext:
             storage_state=str(AUTH_FILE),
             viewport={"width": 1280, "height": 800},
             user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/127.0.0.0 Safari/537.36"
+                "Chrome/131.0.0.0 Safari/537.36"
             ),
             locale="en-US",
             timezone_id="Asia/Kolkata",
@@ -455,7 +508,7 @@ def _launch_browser(pw: Playwright, headless: bool) -> BrowserContext:
 
     # Priority 2: persistent profile directory (fallback)
     if PROFILE_DIR.exists() and any(PROFILE_DIR.iterdir()):
-        logger.info("[Flow] Using persistent profile: %s (no auth JSON found)", PROFILE_DIR)
+        logger.info("[Flow] Using persistent profile: %s", PROFILE_DIR)
         ctx = pw.chromium.launch_persistent_context(
             user_data_dir=str(PROFILE_DIR),
             headless=headless,
@@ -463,9 +516,9 @@ def _launch_browser(pw: Playwright, headless: bool) -> BrowserContext:
             ignore_default_args=["--enable-automation"],
             viewport={"width": 1280, "height": 800},
             user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/127.0.0.0 Safari/537.36"
+                "Chrome/131.0.0.0 Safari/537.36"
             ),
             locale="en-US",
             timezone_id="Asia/Kolkata",
@@ -490,11 +543,14 @@ def _launch_browser(pw: Playwright, headless: bool) -> BrowserContext:
 # Flow Session
 # ---------------------------------------------------------------------------
 
-def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
+def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path, channel: Optional[str] = None) -> Path:
     """Drive the full Google Flow session: open → type → generate → download."""
     page = ctx.new_page() if ctx.pages == [] else ctx.pages[-1]
     if not page or page.is_closed():
         page = ctx.new_page()
+
+    target_project_url = get_flow_project_url(channel)
+    dest_url = target_project_url or FLOW_URL
 
     # Capture video network responses early
     captured_video_urls: list[str] = []
@@ -528,12 +584,16 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
 
     page.on("response", on_response)
 
-    # ---- 1. Navigate to Flow ----
-    logger.info("[Flow] Navigating to %s", FLOW_URL)
-    page.goto(FLOW_URL, timeout=GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
+    # ---- 1. Navigate to Target Project or Landing Page ----
+    logger.info("[Flow] Target URL: %s (channel=%s)", dest_url, channel)
+    if target_project_url and target_project_url in page.url:
+        logger.info("[Flow] Already on target project canvas: %s", page.url[:80])
+    else:
+        logger.info("[Flow] Navigating to %s", dest_url)
+        page.goto(dest_url, timeout=GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
 
-    # ---- 2. Check if Google redirected us to login (but /about is OK here — it's the landing page) ----
-    _assert_not_login_page(page, allow_landing=True)
+    # ---- 2. Check if Google redirected us to login ----
+    _assert_not_login_page(page, allow_landing=bool(not target_project_url))
 
     # ---- 3. Dismiss cookie consent banner if present ----
     try:
@@ -545,8 +605,7 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
     except Exception as exc:
         logger.debug("[Flow] Cookie banner not shown: %s", exc)
 
-    # ---- 4. Enter studio if on landing page ----
-    # ---- 4. Enter studio if on landing page ----
+    # ---- 4. Enter studio if on landing page or ensure project canvas ready ----
     entered_studio = False
     try:
         # Check all open pages in context to see if any already has the studio editor
@@ -556,6 +615,12 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
                 logger.info("[Flow] Already inside studio on page: %s", page.url[:80])
                 entered_studio = True
                 break
+
+        # If redirected directly into a project studio
+        if not entered_studio and "/project/" in page.url:
+            logger.info("[Flow] In studio project: %s", page.url[:80])
+            page.wait_for_selector(".ProseMirror, [contenteditable='true']", timeout=25000)
+            entered_studio = True
 
         if not entered_studio and ("/about" in page.url or page.url.rstrip("/") == FLOW_URL.rstrip("/")):
             start_btn = page.locator(
@@ -576,7 +641,6 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
                         start_btn.click()
                     page = new_page_info.value
                 except Exception:
-                    # In case it didn't open a new page or opened in same page
                     if len(ctx.pages) > 1 and ctx.pages[-1] != page:
                         page = ctx.pages[-1]
             except Exception as e:
@@ -586,8 +650,17 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
             page.wait_for_selector(".ProseMirror, [contenteditable='true']", timeout=25000)
             logger.info("[Flow] Navigated into studio, prompt editor ready.")
             entered_studio = True
+
+        # If target project was specified and we are in studio but on a different project URL, switch to target
+        if target_project_url and target_project_url not in page.url:
+            logger.info("[Flow] Switching studio page to channel project: %s", target_project_url)
+            page.goto(target_project_url, timeout=GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
+            page.wait_for_selector(".ProseMirror, [contenteditable='true']", timeout=25000)
     except Exception as exc:
         logger.warning("[Flow] Studio entry handling: %s", exc)
+
+    if target_project_url and page.url.split("?", 1)[0].rstrip("/") != target_project_url.rstrip("/"):
+        raise FlowError("Flow did not open this channel's dedicated project; generation cancelled.")
 
     # ---- 4.1 Validate session ----
     if "accounts.google.com" in page.url or "signin" in page.url:
@@ -657,6 +730,12 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
     logger.info("[Flow] Found prompt editor. Entering prompt...")
     prompt_el.click()
     time.sleep(0.5)
+    # Clear any previous prompt from the editor
+    try:
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Backspace")
+    except Exception:
+        pass
     try:
         page.keyboard.insert_text(prompt)
     except Exception:
@@ -664,7 +743,34 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
 
     time.sleep(1)
 
-    # ---- 6. Click Generate (arrow_forward icon or button) ----
+    # ---- 6. Snapshot pre-generation state to prevent stale video reuse ----
+    # Card identities, not arrival times of media requests, define the baseline.
+    # An old card can lazily load a brand-new signed URL after Generate.
+    pre_gen_captured: set[str] = {
+        card["id"] for card in _read_generation_cards(page) if card.get("id")
+    }
+    pre_gen_dom_urls: set[str] = set()
+    try:
+        dom_urls = page.evaluate("""() => {
+            const urls = [];
+            document.querySelectorAll('video[src], video source[src]').forEach(v => {
+                const s = v.src || v.getAttribute('src');
+                if (s) urls.push(s);
+            });
+            document.querySelectorAll('a[href*="/asb/"], [data-video-url]').forEach(el => {
+                const s = el.href || el.getAttribute('data-video-url');
+                if (s) urls.push(s);
+            });
+            return urls;
+        }""") or []
+        pre_gen_dom_urls = set(dom_urls)
+        if pre_gen_dom_urls:
+            logger.info("[Flow] Found %d pre-existing media URLs on canvas to ignore", len(pre_gen_dom_urls))
+    except Exception as e:
+        logger.debug("[Flow] Could not snapshot pre-gen DOM URLs: %s", e)
+
+    # ---- 7. Click Generate (arrow_forward icon or button) ----
+    gen_click_time = time.time()
     generate_btn = _find_generate_button(page)
     logger.info("[Flow] Triggering video generation...")
     if generate_btn:
@@ -673,13 +779,20 @@ def _run_flow_session(ctx: BrowserContext, prompt: str, dest_dir: Path) -> Path:
         logger.info("[Flow] Pressing Enter key...")
         page.keyboard.press("Enter")
 
-    time.sleep(5)
+    time.sleep(3)
 
-    # ---- 7. Wait for video to appear ----
+    # ---- 8. Wait for video to appear (generation-specific) ----
     logger.info("[Flow] Waiting for video generation (up to %ds)…", VIDEO_READY_TIMEOUT_MS // 1000)
-    video_url = _wait_for_video(page, captured_video_urls)
+    video_url = _wait_for_video(
+        page,
+        captured_video_urls,
+        pre_gen_ids=pre_gen_captured,
+        prompt=prompt,
+        gen_start_time=gen_click_time,
+        pre_gen_dom_urls=pre_gen_dom_urls,
+    )
 
-    # ---- 8. Download video ----
+    # ---- 9. Download video ----
     filename = f"flow_{uuid.uuid4().hex[:10]}.mp4"
     dest = dest_dir / filename
     _download_video_file(ctx, video_url, dest)
@@ -796,67 +909,111 @@ def _find_generate_button(page: Page):
     return None
 
 
-def _wait_for_video(page: Page, captured_urls: list[str]) -> str:
-    """
-    Wait for the generated video URL to appear.
+def _read_generation_cards(page: Page, prompt: str = "", pre_gen_ids=None) -> list:
+    """Read identity and media from the same Flow tile, verifying its full prompt.
 
-    Strategy:
-    - Check captured network responses for video URLs.
-    - Poll DOM for <video> or <source> elements.
-    - Click any generated video thumbnail cards to trigger media load.
+    Flow's visible tile label is a shortened title, not the submitted prompt.
+    Its Reuse prompt control exposes the full text without submitting generation.
+    Only a new tile with that exact text may supply a video URL.
     """
+    import json
+    cards = page.evaluate("""() => Array.from(
+        document.querySelectorAll('flow-grid-tile-container')
+    ).map((tile, index) => {
+        const image = tile.querySelector('img.thumbnail');
+        const media = tile.querySelector('video[src], video source[src]');
+        // Hover replaces the thumbnail with a video. Keep identity on the tile
+        // across that transition rather than treating playback as a new card.
+        if (!tile.dataset.flowWorkerIdentity) {
+            tile.dataset.flowWorkerIdentity = image?.getAttribute('src') || crypto.randomUUID();
+        }
+        return {index, id: tile.dataset.flowWorkerIdentity,
+                ready: !!tile.querySelector('flow-video-tile'),
+                url: media ? (media.src || media.getAttribute('src')) : null};
+    })""")
+    if not isinstance(cards, list):
+        raise FlowError("Cannot read Flow generation tile identities")
+    if not prompt:
+        return cards
+    verified = []
+    for card in cards:
+        if not card.get("id") or not card.get("ready") or card["id"] in (pre_gen_ids or set()):
+            continue
+        tile = page.locator('flow-grid-tile-container[data-flow-worker-identity=' + json.dumps(card["id"]) + ']')
+        # Recheck after indexing: live grids may reorder while rendering.
+        if tile.get_attribute('data-flow-worker-identity') != card["id"]:
+            continue
+        tile.hover(timeout=2000)
+        editor = _find_prompt_input(page)
+        try:
+            editor.fill("")
+        except Exception:
+            pass
+        reuse_btn = tile.get_by_role("button", name="Reuse prompt", exact=True)
+        try:
+            reuse_btn.dispatch_event("click")
+        except Exception:
+            try:
+                reuse_btn.click(timeout=1500, force=True)
+            except Exception:
+                pass
+        page.wait_for_function("""() => Array.from(document.querySelectorAll(
+            'textarea, [contenteditable="true"]')).some(e =>
+                (e.value || e.innerText || '').trim().length > 0)""", timeout=3000)
+        actual = editor.evaluate("e => e.value === undefined ? e.innerText : e.value")
+        try:
+            editor.fill("")
+        except Exception:
+            pass
+        if " ".join(actual.split()) != " ".join(prompt.split()):
+            continue
+        tile.locator('flow-video-tile').hover(timeout=2000)
+        # Hover loads media only for the verified card. Never use global media.
+        try:
+            tile.locator('video[src], video source[src]').first.wait_for(state="attached", timeout=5000)
+        except Exception:
+            pass
+        media = tile.evaluate("""tile => {
+            const v = tile.querySelector('video[src], video source[src]');
+            return {id: tile.dataset.flowWorkerIdentity,
+                    url: v ? (v.src || v.getAttribute('src')) : null};
+        }""")
+        if media.get("id") == card["id"] and media.get("url"):
+            verified.append(dict(id=card["id"], prompt=actual, url=media.get("url")))
+    return verified
+
+
+def _wait_for_video(
+    page: Page,
+    captured_urls: list,
+    pre_gen_ids: "Optional[set]" = None,
+    prompt: str = "",
+    gen_start_time: float = 0.0,
+    pre_gen_dom_urls: "Optional[set]" = None,
+) -> str:
+    """Wait for a new tile with the submitted prompt; fail if identity is uncertain.
+
+    Network URLs and elapsed time alone cannot identify generated content.
+    Kept legacy arguments for caller compatibility, but never select by them.
+    """
+    if pre_gen_ids is None:
+        pre_gen_ids = set()
+    if pre_gen_dom_urls is None:
+        pre_gen_dom_urls = set()
+
     deadline = time.time() + (VIDEO_READY_TIMEOUT_MS / 1000)
     poll_interval = 4.0
-
     while time.time() < deadline:
-        # 1. Check network captured URLs
-        if captured_urls:
-            logger.info("[Flow] 🎬 Captured video from network: %s", captured_urls[0][:80])
-            return captured_urls[0]
-
-        # 2. Check DOM for video elements
         try:
-            src = page.evaluate("""() => {
-                const v = document.querySelector('video[src], video source[src]');
-                return v ? (v.src || v.getAttribute('src')) : null;
-            }""")
-            if src and "http" in src:
-                logger.info("[Flow] 🎬 Video DOM element found: %s", src[:80])
-                return src
-        except Exception:
-            pass
-
-        # 3. Check for clickable video cards and click to activate playback stream
-        try:
-            card = page.locator(
-                'button.thumbnail-button, [role="button"]:has(video), div:has(> video), [data-item-type="video"]'
-            ).first
-            if card.count() > 0 and card.is_visible():
-                card.click()
-                time.sleep(1)
-            else:
-                # Click candidate canvas coordinates where recent generated videos sit (supports both 2-card and 4-card layouts)
-                for coords in [(248, 250), (370, 250), (480, 250), (590, 250)]:
-                    page.mouse.click(*coords)
-                    time.sleep(0.5)
-                    if captured_urls:
-                        break
-        except Exception:
-            pass
-
-        # 4. Check for error state in DOM
-        error_text = page.evaluate("""() => {
-            const el = document.querySelector('[class*="error"], [role="alert"]');
-            return el ? el.textContent?.trim() : null;
-        }""")
-        if error_text and len(error_text) > 5:
-            logger.warning("[Flow] Page notice: %r", error_text[:100])
-
+            cards = _read_generation_cards(page, prompt, pre_gen_ids)
+            url = _select_generation_video(cards, pre_gen_ids, prompt)
+            if url and url not in pre_gen_dom_urls:
+                _validate_video_url(url)
+                logger.info("[Flow] Verified new video tile with matching submitted prompt.")
+                return url
+        except Exception as exc:
+            logger.debug("[Flow] Waiting for verifiable generation tile: %s", type(exc).__name__)
         time.sleep(poll_interval)
-
-    # Final fallback check on captured_urls
-    if captured_urls:
-        return captured_urls[0]
 
     # Save diagnostic screenshot
     try:
@@ -865,78 +1022,235 @@ def _wait_for_video(page: Page, captured_urls: list[str]) -> str:
         pass
 
     raise FlowError(
-        f"Video did not appear after {VIDEO_READY_TIMEOUT_MS // 1000}s. "
-        "Possible causes: generation failed, quota exceeded, or UI changed."
+        "No new video could be verified against this generation's prompt. "
+        "Nothing was downloaded or uploaded; check Flow generation and tile controls."
     )
 
 
 def _download_video_file(ctx: BrowserContext, video_url: str, dest: Path) -> None:
     """
-    Download the generated video from the CDN URL to `dest`.
+    Download the generated video from the CDN URL to ``dest``.
 
-    Security: URL validated to be a known Google/GCS domain before fetching.
-    Download capped at 1 GB (500 MB typical for Flow videos).
+    Authenticated: scopes the browser session cookies to the request so that
+    Google CDN signed URLs that require a session cookie are not rejected (403).
+    Handles a single 302 redirect, rescoping cookies to the redirect target.
+    Validates the MP4 file header and enforces a 1 GB size cap.
+    Never echoes signed URL tokens or query-string parameters in error messages.
     """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
     # security-reviewer: whitelist Google CDN domains before fetching
     _validate_video_url(video_url)
 
-    MAX_BYTES = 1024 * 1024 * 1024  # 1 GB cap
+    # 1 GB cap by default; test ns may override MAX_VIDEO_BYTES to a smaller sentinel
+    MAX_BYTES = MAX_VIDEO_BYTES
+    # Minimum meaningful MP4 (ftyp box header is 8–32 bytes)
+    MIN_BYTES = 8
+    # Valid MP4 ftyp signatures in the first 32 bytes
+    _MP4_SIGNATURES = (b"ftyp", b"mdat", b"moov")
 
-    import urllib.request
-    import shutil
+    def _safe_url_label(u: str) -> str:
+        """Strip query-string from URL before logging to suppress signed tokens."""
+        try:
+            p = urllib.parse.urlparse(u)
+            return urllib.parse.urlunparse(p._replace(query="", fragment=""))
+        except Exception:
+            return "<url>"
 
     logger.info("[Flow] Downloading video → %s", dest)
 
-    # Use urllib with a timeout rather than opening a new page for download
-    try:
-        req = urllib.request.Request(
-            video_url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; FlowBot/1.0)"},
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            bytes_written = 0
-            with open(dest, "wb") as f:
-                while True:
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    bytes_written += len(chunk)
-                    if bytes_written > MAX_BYTES:
-                        # silent-failure-hunter: cap and clean up partial file
-                        dest.unlink(missing_ok=True)
-                        raise FlowError(
-                            f"Download exceeded 1 GB cap ({bytes_written // 1024 // 1024} MB). "
-                            "Something is wrong with the video URL."
-                        )
-                    f.write(chunk)
+    def _scope_cookies(url: str) -> str:
+        """Return browser cookies for *url* as a Cookie header string."""
+        try:
+            cookies = ctx.cookies([url])
+            if cookies:
+                return "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+        except Exception as e:
+            logger.debug("[Flow] Cookie fetch notice: %s", e)
+        return ""
 
+    def _get_user_agent() -> str:
+        """Return the browser's current user-agent string."""
+        try:
+            return ctx.pages[0].evaluate("navigator.userAgent")
+        except Exception:
+            return "Mozilla/5.0 (compatible; FlowBot/1.0)"
+
+    user_agent = _get_user_agent()
+
+    def _make_request(url: str) -> urllib.request.Request:
+        headers = {"User-Agent": user_agent}
+        cookie_str = _scope_cookies(url)
+        if cookie_str:
+            headers["Cookie"] = cookie_str
+        # Disable automatic redirect following — we handle it manually so we
+        # can rescope cookies to the new host.
+        return urllib.request.Request(url, headers=headers)
+
+    # Build a no-redirect opener
+    _no_redirect_handler = urllib.request.HTTPErrorProcessor()
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None  # signal: do not follow
+
+    opener = urllib.request.build_opener(_NoRedirect())
+
+    dest_tmp = dest.with_suffix(".tmp")
+    try:
+        # --- First request ---
+        req = _make_request(video_url)
+        try:
+            response = opener.open(req, timeout=120)
+            final_url = video_url
+        except urllib.error.HTTPError as http_err:
+            if http_err.code in (301, 302, 303, 307, 308):
+                # Rescope cookies to redirect target
+                redirect_target = http_err.headers.get("Location", "")
+                if not redirect_target:
+                    raise FlowError("Redirect with no Location header.") from http_err
+                _validate_video_url(redirect_target)
+                req2 = _make_request(redirect_target)
+                try:
+                    response = opener.open(req2, timeout=120)
+                    final_url = redirect_target
+                except Exception as exc2:
+                    raise FlowError(f"Video download failed after redirect: {type(exc2).__name__}") from exc2
+            else:
+                raise FlowError(
+                    f"Video download failed: HTTP {http_err.code} from {_safe_url_label(video_url)}"
+                ) from http_err
+        except Exception as exc:
+            raise FlowError(f"Video download failed: {type(exc).__name__}") from exc
+
+        # --- Stream to temp file ---
+        bytes_written = 0
+        first_chunk = b""
+        try:
+            with response:
+                with open(dest_tmp, "wb") as f:
+                    while True:
+                        chunk = response.read(65536)
+                        if not chunk:
+                            break
+                        if not first_chunk:
+                            first_chunk = chunk[:64]
+                        bytes_written += len(chunk)
+                        if bytes_written > MAX_BYTES:
+                            raise FlowError(
+                                f"Download exceeded 1 GB cap — aborting {_safe_url_label(final_url)}."
+                            )
+                        f.write(chunk)
+        except FlowError:
+            raise
+        except Exception as exc:
+            raise FlowError(f"Video download failed during stream: {type(exc).__name__}") from exc
+
+        # --- Validate: not HTML / not too small ---
+        if bytes_written < MIN_BYTES:
+            raise FlowError(
+                f"Downloaded file is too small ({bytes_written} bytes) — not a video."
+            )
+        # Check for HTML login redirect masquerading as a 200 response
+        if first_chunk[:10].lstrip()[:5] in (b"<html", b"<!DOC", b"<HTML"):
+            raise FlowError(
+                "Download returned an HTML response — authentication may have failed."
+            )
+        # Validate MP4 header: ftyp/mdat/moov box expected in first 32 bytes
+        header = first_chunk[:32]
+        if not any(sig in header for sig in _MP4_SIGNATURES):
+            raise FlowError(
+                f"Downloaded file does not appear to be a valid MP4 ({bytes_written} bytes). "
+                "The video may not have loaded correctly."
+            )
+
+        # --- Atomically move temp to dest ---
+        dest_tmp.replace(dest)
         size_mb = bytes_written / 1024 / 1024
         logger.info("[Flow] Downloaded %.1f MB → %s", size_mb, dest.name)
 
-    except OSError as exc:
+    except FlowError:
+        dest_tmp.unlink(missing_ok=True)
         dest.unlink(missing_ok=True)
-        raise FlowError(f"Video download failed: {exc}") from exc
+        raise
+    except Exception as exc:
+        dest_tmp.unlink(missing_ok=True)
+        dest.unlink(missing_ok=True)
+        raise FlowError(f"Video download failed: {type(exc).__name__}") from exc
 
 
 def _validate_video_url(url: str) -> None:
     """
     security-reviewer: Reject URLs that are not Google/GCS CDN domains.
     Prevents SSRF if the page injects a malicious URL via the DOM.
+    Never echoes signed URL tokens or credentials in the error message.
     """
-    allowed_patterns = [
-        r"^https://storage\.googleapis\.com/",
-        r"^https://flow-content\.google/",
-        r"^https://[^/]+\.googlevideo\.com/",
-        r"^https://[^/]+\.googleusercontent\.com/",
-        r"^https://[^/]+\.google\.com/",
-        r"^https://[^/]+\.gstatic\.com/",
-        r"^https://lh[0-9]+\.googleusercontent\.com/",
-    ]
-    if not any(re.match(pat, url) for pat in allowed_patterns):
-        raise FlowError(
-            f"Video URL failed domain whitelist check: {url[:80]!r}. "
-            "Refusing to download from untrusted domain."
-        )
+    import urllib.parse
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        raise FlowError("Video URL failed domain whitelist check: unparseable URL.")
+
+    # Reject anything that is not HTTPS
+    if parsed.scheme != "https":
+        raise FlowError("Video URL failed domain whitelist check: not HTTPS.")
+
+    # Reject URLs with userinfo (e.g. evil@host) — SSRF / credential leakage vector
+    if parsed.username or parsed.password:
+        raise FlowError("Video URL failed domain whitelist check: userinfo present.")
+
+    host = parsed.hostname or ""
+    allowed_suffixes = (
+        ".googleapis.com",
+        ".googlevideo.com",
+        ".googleusercontent.com",
+        ".google.com",
+        ".gstatic.com",
+    )
+    exact_allowed = (
+        "storage.googleapis.com",
+        "flow-content.google",
+    )
+
+    if host in exact_allowed or any(host.endswith(s) for s in allowed_suffixes):
+        return
+
+    raise FlowError("Video URL failed domain whitelist check: untrusted domain.")
+
+
+# ---------------------------------------------------------------------------
+# Generation-specific asset selection
+# ---------------------------------------------------------------------------
+
+def _select_generation_video(
+    cards: list,
+    pre_gen_ids: set,
+    prompt: str,
+) -> "Optional[str]":
+    """
+    Return the URL of the video card that belongs to the current generation.
+
+    Rules (all must hold for a card to be selected):
+    - card["id"] must be non-empty and NOT in pre_gen_ids (new card)
+    - card["prompt"] normalised by whitespace must exactly equal the normalised prompt
+    - Returns None if no qualifying card is found (caller should wait or fail)
+
+    Normalisation: collapse internal whitespace runs to a single space and strip.
+    """
+    def _norm(s: str) -> str:
+        return " ".join(s.split())
+
+    target = _norm(prompt)
+    for card in cards:
+        card_id = str(card.get("id", "")).strip()
+        if not card_id or card_id in pre_gen_ids:
+            continue
+        card_prompt = _norm(str(card.get("prompt", "")))
+        if card_prompt == target:
+            return card.get("url")
+    return None
 
 
 def _sanitize_prompt(prompt: str) -> str:

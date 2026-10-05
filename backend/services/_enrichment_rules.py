@@ -25,6 +25,17 @@ _COMMENT_TEMPLATES = {
 }
 
 _HOOK_STARTERS = [
+    "Watch this amazing",
+    "See why everyone loves this",
+    "This is why you'll love",
+    "You won't believe this",
+    "Check out this incredible",
+    "Experience this stunning",
+    "Take a look at",
+    "Best ever",
+]
+
+_COOKING_HOOK_STARTERS = [
     "Watch how to make",
     "See why everyone loves this",
     "This is why you'll love",
@@ -34,6 +45,16 @@ _HOOK_STARTERS = [
     "Best ever miniature",
     "Step-by-step tiny",
 ]
+
+
+def _is_cooking_channel(channel: str, text: str = "") -> bool:
+    ch = (channel or "").lower()
+    tx = (text or "").lower()
+    if any(k in ch for k in ("kitchen", "cook", "food", "dish", "recipe", "channel_a")):
+        return True
+    if any(k in tx for k in ("cook", "kitchen", "recipe", "dish", "biryani", "curry", "baking", "food")):
+        return True
+    return False
 
 
 def _parse_tags(raw: str) -> list[str]:
@@ -48,10 +69,12 @@ def enrich_title(original: str, channel: str) -> str:
     original = original.strip()
     # If original already starts with a hook word
     if any(original.lower().startswith(w.lower())
-           for w in ("how", "why", "what", "watch", "best", "this", "try", "see", "step", "here", "you")):
+           for w in ("how", "why", "what", "watch", "best", "this", "try", "see", "step", "here", "you", "check", "experience")):
         title = original
     else:
-        hook = _HOOK_STARTERS[hash(original) % len(_HOOK_STARTERS)]
+        # Channel names cannot establish the content of this particular video.
+        starters = _HOOK_STARTERS
+        hook = starters[hash(original) % len(starters)]
         title = f"{hook}: {original}"
 
     if len(title) > 70:
@@ -61,7 +84,9 @@ def enrich_title(original: str, channel: str) -> str:
 
 def enrich_tags(post_tags: str, channel: str) -> str:
     post_tag_list = _parse_tags(post_tags)
-    seo_pool = settings.seo_tags_for(channel)
+    # The legacy settings helper returns channel B's tags for every other key.
+    # Custom channels must never inherit another channel's SEO configuration.
+    seo_pool = settings.seo_tags_for(channel) if channel in ("channel_a", "channel_b") else []
     seen: set[str] = {t.lower() for t in post_tag_list}
     merged = list(post_tag_list)
     added = 0
@@ -73,7 +98,7 @@ def enrich_tags(post_tags: str, channel: str) -> str:
             seen.add(seo_tag.lower())
             added += 1
     # Ensure standard discovery tags
-    defaults = ["miniature cooking", "tiny food", "asmr cooking", "satisfying video", "shorts", "street food"]
+    defaults = ["shorts"]
     for d in defaults:
         if len(merged) >= 20:
             break
@@ -86,21 +111,21 @@ def enrich_tags(post_tags: str, channel: str) -> str:
 def enrich_description(original: str, channel: str, subscriber_count: int, tags: str) -> str:
     body = original.strip()
     if not body:
-        body = "Experience the authentic sizzle, aromas, and sensory joy of miniature cooking crafted with real ingredients in a tiny handcrafted kitchen."
+        body = "Watch this short video and share your thoughts."
     
     # Layer 2: Subscribe CTA (if under subscriber threshold)
     if subscriber_count < SUBSCRIBER_CTA_THRESHOLD:
-        cta = _CTAS.get(channel, "🔔 Subscribe for daily satisfying miniature ASMR cooking adventures!")
+        cta = "🔔 Subscribe for more videos!"
         body = f"{body}\n\n{cta}"
 
     # Layer 3: Engagement comment question
-    engagement_prompt = "👉 Would you eat this in one single bite or save it? Rate this miniature dish from 1-10 below! 👇"
+    engagement_prompt = "👉 What did you think of this? Share your thoughts below!"
     body = f"{body}\n\n{engagement_prompt}"
 
     # Layer 4: Hashtags
     tag_list = _parse_tags(tags)
     hashtags = [_to_hashtag(t) for t in tag_list[:6] if t]
-    default_tags = ["#shorts", "#miniaturecooking", "#tinyfood", "#asmrcooking", "#satisfying", "#indianfood"]
+    default_tags = ["#shorts"]
     for dt in default_tags:
         if len(hashtags) >= 8:
             break
@@ -112,23 +137,7 @@ def enrich_description(original: str, channel: str, subscriber_count: int, tags:
 
 
 def generate_first_comment(channel: str, title: str) -> str:
-    template = "Which miniature recipe should we cook next? Top voted comment wins! 👩‍🍳👇"
-    words = [w for w in title.split() if len(w) > 3 and w.isalpha()]
-    if words:
-        topic = words[0].lower()
-        if "indian" in channel or channel == "channel_a":
-            comment = f"Would you try eating this tiny {topic} in one single bite? Drop your rating 1-10! 😋👇"
-        else:
-            comment = f"Did the sounds of this miniature {topic} relax you? Tell me below! 💬👇"
-    else:
-        comment = template
-    comment = comment[:199]
-    emoji_count = sum(1 for c in comment if ord(c) > 0x1F300)
-    if emoji_count == 0:
-        comment = comment.rstrip() + " 👇"
-    elif emoji_count > 1:
-        comment = re.sub(r"[^\x00-\x7F]+", "", comment).strip() + " 👇"
-    return comment[:199]
+    return "What stood out to you in this video? Share your thoughts below! 👇"
 
 
 def enrich_post(channel: str, title: str, description: str,
