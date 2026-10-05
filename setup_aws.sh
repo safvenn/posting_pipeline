@@ -122,7 +122,7 @@ cd "${WORKER_DIR}"
 "${VENV_PYTHON}" auto_generate_worker.py \
     --pipeline-url "${PIPELINE_URL}" \
     --api-key "${API_KEY}" \
-    --channel "${CHANNEL:-the_indian_kitchen}" \
+    --channel all \
     --max-videos "${MAX_VIDEOS:-1}" \
     >> "${LOG_FILE}" 2>&1
 

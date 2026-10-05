@@ -88,7 +88,8 @@ logger = logging.getLogger("flow_worker")
 # ---------------------------------------------------------------------------
 DEFAULT_PIPELINE_URL = os.getenv("PIPELINE_URL", "https://posting-pipeline.onrender.com").rstrip("/")
 DEFAULT_API_KEY = os.getenv("API_KEY", "")
-DEFAULT_CHANNEL = os.getenv("CHANNEL", "the_indian_kitchen")
+# Scheduled operation discovers channels; --channel remains an explicit manual override.
+DEFAULT_CHANNEL = "all"
 DEFAULT_MAX_VIDEOS = int(os.getenv("MAX_VIDEOS_PER_RUN", "1"))
 DEFAULT_DELAY_SEC = int(os.getenv("DELAY_BETWEEN_VIDEOS_SEC", "45"))
 LOCK_FILE = Path(os.getenv("WORKER_LOCK_FILE", "/tmp/auto_generate_worker.lock"))
@@ -180,7 +181,7 @@ class PipelineClient:
         try:
             with httpx.Client(timeout=15.0, headers=self._headers()) as client:
                 resp = client.get(url)
-                return resp.status_code < 500
+                return 200 <= resp.status_code < 300
         except Exception as exc:
             logger.warning("Pipeline health check failed (%s): %s", url, exc)
             return False
@@ -193,7 +194,7 @@ class PipelineClient:
             try:
                 with httpx.Client(timeout=30.0, headers=self._headers()) as client:
                     resp = client.get(url)
-                    if resp.status_code < 500:
+                    if 200 <= resp.status_code < 300:
                         logger.info("Backend is online and healthy (attempt %d/%d, HTTP %d).", attempt, max_attempts, resp.status_code)
                         return True
                     logger.warning("Backend returned HTTP %d on warmup attempt %d/%d.", resp.status_code, attempt, max_attempts)
@@ -208,6 +209,29 @@ class PipelineClient:
         logger.warning("Backend warmup did not receive healthy response after %d attempts.", max_attempts)
         return False
 
+    def discover_channels(self) -> List[str]:
+        """Read active channels afresh, excluding channels without a Sheet binding."""
+        with httpx.Client(timeout=self.timeout, headers=self._headers()) as client:
+            response = client.get(f"{self.base_url}/api/extension/channels")
+            response.raise_for_status()
+            records = response.json()
+        if not isinstance(records, list):
+            raise ValueError("Channel discovery returned an invalid response")
+        channels: List[str] = []
+        for record in records:
+            if not isinstance(record, dict) or not isinstance(record.get("id"), str) or not record["id"].strip():
+                raise ValueError("Channel discovery returned an invalid channel")
+            key = record["id"].strip()
+            if key == "google_drive":
+                continue
+            sheet_id = record.get("sheet_id")
+            if not isinstance(sheet_id, str) or not sheet_id.strip():
+                logger.warning("Skipping channel %s: configure its Google Sheet first.", key)
+                continue
+            if key not in channels:
+                channels.append(key)
+        return channels
+
     def fetch_pending_queue(self, channel: str, limit: int = 5, max_retries: int = 3) -> List[QueueItem]:
         """Fetch pending rows from the Google Sheet via Pipeline API with robust retries."""
         url = f"{self.base_url}/api/extension/auto-queue"
@@ -218,6 +242,13 @@ class PipelineClient:
             try:
                 with httpx.Client(timeout=self.timeout, headers=self._headers()) as client:
                     resp = client.get(url, params=params)
+                    if resp.status_code in (401, 403):
+                        raise RuntimeError(
+                            f"Pipeline queue authorization failed (HTTP {resp.status_code}). "
+                            "Synchronize the worker API_KEY with the backend's accepted "
+                            "credential and verify access to /api/extension/auto-queue. "
+                            "Authorization failures are not retried."
+                        )
                     if resp.status_code != 200:
                         logger.error(
                             "Failed to fetch auto-queue (attempt %d/%d, HTTP %d): %s",
@@ -338,7 +369,7 @@ def run_worker_batch(
 ) -> int:
     """
     Executes one batch of auto-generation work.
-    Returns the number of successfully generated and uploaded videos.
+    Returns the success count (zero for an empty queue), or -1 if any item fails.
     """
     logger.info("=" * 60)
     logger.info("Starting Flow Auto-Generate Worker")
@@ -382,6 +413,7 @@ def run_worker_batch(
 
     logger.info("Found %d pending prompt(s) to process.", len(pending_items))
     success_count = 0
+    failure_count = 0
 
     for idx, item in enumerate(pending_items, start=1):
         logger.info(
@@ -393,7 +425,10 @@ def run_worker_batch(
         )
 
         # Mark as 'generating' in Sheet
-        client.update_status(channel, item.id, "generating")
+        if not client.update_status(channel, item.id, "generating"):
+            logger.error("Skipping row %s: could not mark it as generating.", item.id)
+            failure_count += 1
+            continue
 
         video_file: Optional[Path] = None
         try:
@@ -418,10 +453,20 @@ def run_worker_batch(
             logger.info("Pipeline ingest accepted: %s", upload_resp.get("message", "OK"))
 
             # 5. Mark as 'uploaded'
-            client.update_status(channel, item.id, "uploaded")
-            success_count += 1
+            if client.update_status(channel, item.id, "uploaded"):
+                success_count += 1
+            else:
+                # Ingest already accepted this video. Do not mark it failed and
+                # invite a duplicate upload; leave reconciliation to the operator.
+                failure_count += 1
+                logger.error(
+                    "Row %s was accepted by the pipeline, but its uploaded status "
+                    "could not be saved. Reconcile the sheet before retrying this row.",
+                    item.id,
+                )
 
         except FlowCookiesExpiredError as exc:
+            failure_count += 1
             logger.critical("SESSION EXPIRED: %s", exc)
             client.update_status(channel, item.id, "failed")
             try:
@@ -432,6 +477,7 @@ def run_worker_batch(
             break
 
         except Exception as exc:
+            failure_count += 1
             logger.error("Generation/upload failed for row %s: %s", item.id, exc, exc_info=True)
             # silent-failure-hunter: check if failure was an unhandled session expiry
             err_str = str(exc).lower()
@@ -457,8 +503,66 @@ def run_worker_batch(
             logger.info("Waiting %ds before next video generation...", delay_sec)
             time.sleep(delay_sec)
 
-    logger.info("Worker batch complete. Successfully processed: %d/%d", success_count, len(pending_items))
-    return success_count
+    logger.info(
+        "Worker batch complete. Successfully processed: %d/%d; failed: %d",
+        success_count, len(pending_items), failure_count,
+    )
+    return -1 if failure_count else success_count
+
+
+def run_worker_cycle(
+    pipeline_url: str = DEFAULT_PIPELINE_URL,
+    api_key: str = DEFAULT_API_KEY,
+    channel: str = DEFAULT_CHANNEL,
+    max_videos: int = DEFAULT_MAX_VIDEOS,
+    delay_sec: int = DEFAULT_DELAY_SEC,
+    headless: bool = True,
+) -> int:
+    """Process each configured channel sequentially, with a limit per channel.
+
+    Discovery is repeated on every cycle. Failures are reported without starving
+    later channels; the caller holds one lock for the entire cycle.
+    """
+    if max_videos < 1 or max_videos > 50 or delay_sec < 0:
+        logger.error("max_videos must be 1..50 and delay_sec must be nonnegative.")
+        return -1
+    if channel != "all":
+        return run_worker_batch(
+            pipeline_url=pipeline_url, api_key=api_key, channel=channel,
+            max_videos=max_videos, delay_sec=delay_sec, headless=headless,
+        )
+    client = PipelineClient(base_url=pipeline_url, api_key=api_key)
+    client.warmup(max_attempts=3, backoff_sec=10.0)
+    try:
+        channels = client.discover_channels()
+    except Exception as exc:
+        logger.error("Channel discovery failed; no generation attempted: %s", exc)
+        return -1
+    if not channels:
+        logger.warning("No active channels with a Google Sheet configured.")
+        return 0
+    logger.info("Discovered %d channels; limit %d videos per channel: %s",
+                len(channels), max_videos, ", ".join(channels))
+    success_count = 0
+    failures = []
+    for index, key in enumerate(channels):
+        try:
+            result = run_worker_batch(
+                pipeline_url=pipeline_url, api_key=api_key, channel=key,
+                max_videos=max_videos, delay_sec=delay_sec, headless=headless,
+            )
+        except Exception:
+            logger.exception("Channel %s failed; continuing with remaining channels.", key)
+            result = -1
+        if result < 0:
+            failures.append(key)
+        else:
+            success_count += result
+        if index + 1 < len(channels) and result != 0:
+            time.sleep(delay_sec)
+    logger.info("Channel cycle complete: %d channels, %d successful videos in clean batches, failed channels: %s",
+                len(channels), success_count, ", ".join(failures) or "none")
+    return -1 if failures else success_count
 
 
 # ---------------------------------------------------------------------------
@@ -481,13 +585,13 @@ def main():
     parser.add_argument(
         "--channel",
         default=DEFAULT_CHANNEL,
-        help="Target channel ID (e.g. the_indian_kitchen, channel_a, channel_b)",
+        help="Channel ID for a manual run, or all for automatic discovery (default: all)",
     )
     parser.add_argument(
         "--max-videos",
         type=int,
         default=DEFAULT_MAX_VIDEOS,
-        help="Max videos to process in this run (default: 1)",
+        help="Max videos per channel in each run (default: 1)",
     )
     parser.add_argument(
         "--delay",
@@ -516,7 +620,7 @@ def main():
                 logger.info("Running in loop mode (interval: %ds)...", args.loop)
                 while True:
                     try:
-                        run_worker_batch(
+                        run_worker_cycle(
                             pipeline_url=args.pipeline_url,
                             api_key=args.api_key,
                             channel=args.channel,
@@ -529,7 +633,7 @@ def main():
                     logger.info("Sleeping for %ds until next poll...", args.loop)
                     time.sleep(args.loop)
             else:
-                batch_res = run_worker_batch(
+                batch_res = run_worker_cycle(
                     pipeline_url=args.pipeline_url,
                     api_key=args.api_key,
                     channel=args.channel,
@@ -538,7 +642,7 @@ def main():
                     headless=not args.headful,
                 )
                 if batch_res < 0:
-                    logger.error("Flow worker batch failed with critical error. Exiting with code 1.")
+                    logger.error("Flow worker batch failed. Exiting with code 1.")
                     sys.exit(1)
     except WorkerLockError as lock_err:
         logger.warning("Aborting: %s", lock_err)
