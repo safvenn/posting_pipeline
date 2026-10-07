@@ -76,12 +76,100 @@ DEFAULT_FLOW_PROJECTS = {
     "sky_keepers": "https://flow.google.com/project/3df06608-ec70-42fa-a5ea-d190a44a2016",
 }
 
+# Runtime cache: channel_key -> URL, populated by create_flow_project at runtime.
+# Persists for the lifetime of the process so a second call reuses the same canvas.
+_auto_project_cache: dict[str, str] = {}
 
-def get_flow_project_url(channel: Optional[str] = None) -> Optional[str]:
+
+def create_flow_project(page, channel_name: str) -> str:
+    """Create a new Google Flow project for *channel_name* and return its canvas URL.
+
+    Navigates to the Flow home page, clicks the 'New project' button, waits for
+    the URL to settle on /project/<uuid>, sets the project title to the channel
+    name, and returns the full canvas URL.
+
+    Args:
+        page: A live Playwright Page object (already authenticated).
+        channel_name: Human-readable channel name used as the project title.
+
+    Returns:
+        The new project's canvas URL (https://flow.google.com/project/<uuid>).
+
+    Raises:
+        FlowError: If the new project URL cannot be obtained.
+    """
+    logger.info("[Flow] Auto-provisioning new Flow project for channel '%s'...", channel_name)
+
+    # Navigate to Flow home where the 'New project' button lives
+    home_page = page.context.new_page() if hasattr(page, "context") else page
+    try:
+        home_page.goto(FLOW_URL, timeout=GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
+        time.sleep(2)
+
+        # Click the 'New project' button on the home grid
+        new_btn = home_page.locator(
+            'button.new-project-button, '
+            'button[aria-label*="New project"], '
+            'button:has-text("New project")'
+        ).first
+        new_btn.wait_for(state="visible", timeout=15_000)
+        logger.info("[Flow] Clicking 'New project' button...")
+
+        # The click may open the project in the same tab or a new one
+        try:
+            with home_page.context.expect_page(timeout=8_000) as new_page_info:
+                new_btn.click()
+            project_page = new_page_info.value
+        except Exception:
+            new_btn.click()
+            project_page = home_page
+
+        # Wait until the URL contains /project/<uuid>
+        project_page.wait_for_url("**/project/**", timeout=30_000)
+        project_url = project_page.url.split("?", 1)[0].rstrip("/")
+        logger.info("[Flow] New project created: %s", project_url)
+
+        # Set the project title so it's identifiable in the Flow home grid
+        try:
+            title_el = project_page.locator(
+                'flow-editable-text, [contenteditable="true"][aria-label*="title"], '
+                '.project-title [contenteditable="true"]'
+            ).first
+            title_el.wait_for(state="visible", timeout=8_000)
+            title_el.click()
+            project_page.keyboard.press("Control+A")
+            project_page.keyboard.insert_text(channel_name.replace("_", " ").title())
+            project_page.keyboard.press("Enter")
+            logger.info("[Flow] Project title set to '%s'.", channel_name)
+        except Exception as exc:
+            logger.debug("[Flow] Could not set project title (non-fatal): %s", exc)
+
+        return project_url
+
+    except Exception as exc:
+        raise FlowError(f"Failed to auto-create Flow project for '{channel_name}': {exc}") from exc
+
+
+def get_flow_project_url(channel: Optional[str] = None, page=None) -> Optional[str]:
     """Get the Google Flow dedicated project URL for a channel.
 
-    Checks environment variable FLOW_PROJECT_<CHANNEL> (e.g. FLOW_PROJECT_SKY_KEEPERS)
-    first, then falls back to DEFAULT_FLOW_PROJECTS.
+    Resolution order:
+      1. Environment variable FLOW_PROJECT_<CHANNEL> (e.g. FLOW_PROJECT_SKY_KEEPERS)
+      2. DEFAULT_FLOW_PROJECTS mapping
+      3. Runtime cache populated by a previous auto-provision call
+      4. Auto-provision via *page* (a live Playwright Page) if supplied —
+         creates a new project on Flow and caches the URL for future calls.
+
+    Args:
+        channel: Channel identifier string (case/space insensitive).
+        page: Optional live Playwright Page used for auto-provisioning when the
+              channel has no pre-configured project URL.
+
+    Returns:
+        The project canvas URL, or None when called with no channel.
+
+    Raises:
+        FlowError: If no project is configured and *page* is not supplied.
     """
     if not channel:
         return os.getenv("FLOW_PROJECT_URL")
@@ -93,6 +181,19 @@ def get_flow_project_url(channel: Optional[str] = None) -> Optional[str]:
     project = DEFAULT_FLOW_PROJECTS.get(normalized)
     if project:
         return project
+    # Check runtime cache from a previous auto-provision.
+    # Use globals() so this works both in the real module and in the test's exec() namespace.
+    _cache: dict = globals().setdefault("_auto_project_cache", {})
+    cached = _cache.get(normalized)
+    if cached:
+        logger.info("[Flow] Reusing cached auto-provisioned project for '%s': %s", channel, cached)
+        return cached
+    # Auto-provision when a live page context is available
+    if page is not None:
+        new_url = create_flow_project(page, channel)
+        _cache[normalized] = new_url
+        logger.info("[Flow] Cached new project URL for '%s': %s", channel, new_url)
+        return new_url
     raise FlowError(
         f"No dedicated Flow project configured for channel '{channel}'. "
         f"Set {env_key} before generating videos for this channel."
@@ -111,7 +212,7 @@ VIDEO_READY_TIMEOUT_MS = 300_000   # 5 min — video generation can take a while
 DOWNLOAD_TIMEOUT_MS = 120_000
 
 # Safety limits
-MAX_PROMPT_LEN = 4000
+MAX_PROMPT_LEN = 5500
 MAX_VIDEO_BYTES = 1024 * 1024 * 1024  # 1 GB cap; test ns can override with smaller value
 
 
@@ -1258,17 +1359,30 @@ def _sanitize_prompt(prompt: str) -> str:
     data-scraper-agent + security-reviewer: sanitize the prompt before
     injecting into the page's input element.
 
-    Strips control characters and enforces max length.
+    Strips control characters, hoists trailing subject definitions to the front
+    so key landmark/subject identity is never lost, and enforces max length.
     """
     # Strip null bytes and other control chars (keep newlines and tabs)
     prompt = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", prompt)
     prompt = prompt.strip()
-    if len(prompt) > MAX_PROMPT_LEN:
+
+    # Hoist trailing Subject: definition to the front if buried deep in template boilerplate.
+    # Video generation models attend strongest to opening tokens, and length truncation
+    # must never discard the actual subject (e.g. landmark or dish identity).
+    sub_match = re.search(r"(?is)\b(subject:\s*(?:\[[^\]]+\]|[^\r\n]+))", prompt)
+    if sub_match and sub_match.start() > 50:
+        subject_block = sub_match.group(1).strip()
+        remaining = (prompt[:sub_match.start()] + "\n" + prompt[sub_match.end():]).strip()
+        remaining = re.sub(r"\n{3,}", "\n\n", remaining)
+        prompt = f"{subject_block}\n\n{remaining}"
+
+    max_len = globals().get("MAX_PROMPT_LEN", MAX_PROMPT_LEN)
+    if len(prompt) > max_len:
         logger.warning(
             "[Flow] Prompt truncated from %d to %d chars",
-            len(prompt), MAX_PROMPT_LEN,
+            len(prompt), max_len,
         )
-        prompt = prompt[:MAX_PROMPT_LEN]
+        prompt = prompt[:max_len]
     if not prompt:
         raise FlowError("Prompt is empty after sanitization.")
     return prompt

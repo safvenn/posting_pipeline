@@ -647,6 +647,20 @@ def get_auto_queue(
         logger.error("auto-queue: failed to read sheet for channel %s: %s", channel, exc)
         raise HTTPException(status_code=503, detail=f"Could not read Google Sheet: {exc}")
 
+    existing_row_ids: set[str] = set()
+    try:
+        from backend.database import SessionLocal
+        from backend.models import Post
+        with SessionLocal() as db:
+            rows_in_db = db.query(Post.sheet_row_id).filter(
+                Post.channel == channel,
+                Post.sheet_row_id != None,
+                Post.status.in_(["queued", "scheduled", "uploaded", "commented"]),
+            ).all()
+            existing_row_ids = {str(r[0]).strip() for r in rows_in_db if r[0]}
+    except Exception as db_err:
+        logger.warning("auto-queue: could not query existing posts from DB: %s", db_err)
+
     pending: list[AutoQueueRow] = []
     for row in all_rows:
         prompt_val = str(row.get("prompt", "") or "").strip()
@@ -657,14 +671,18 @@ def get_auto_queue(
         scheduled = str(row.get("scheduled", "") or "").strip()
         upload_id = str(row.get("upload id", "") or row.get("upload_id", "")).strip()
 
-        # Skip rows already processing, done, or already uploaded
+        # Skip rows currently generating, done, or already marked uploaded
         if auto_status in ("generating", "done", "uploaded"):
             continue
-        if scheduled or upload_id:
-            continue  # Already processed
+        # Skip rows with confirmed YouTube upload ID
+        if upload_id:
+            continue
 
         row_id = str(row.get("id", "")).strip()
         if not row_id:
+            continue
+        # Skip rows that already have an active post in the pipeline database
+        if row_id in existing_row_ids:
             continue
 
         pending.append(AutoQueueRow(

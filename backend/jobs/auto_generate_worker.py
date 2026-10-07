@@ -436,6 +436,7 @@ def run_worker_batch(
             t0 = time.time()
             video_file = generate_video(
                 prompt=item.prompt,
+                channel=channel,
                 headless=headless,
             )
             gen_duration = time.time() - t0
