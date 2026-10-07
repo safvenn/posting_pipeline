@@ -280,10 +280,22 @@ async def upload_from_extension(
                 sheet_desc = str(sheet_data.get("description", "")).strip()
                 sheet_tags = str(sheet_data.get("tags", "")).strip()
 
-                is_already_scheduled = bool(
-                    str(sheet_data.get("scheduled", "")).strip()
-                    or str(sheet_data.get("upload id", "") or sheet_data.get("upload_id", "")).strip()
+                has_upload_id = bool(
+                    str(sheet_data.get("upload id", "") or sheet_data.get("upload_id", "")).strip()
                 )
+                is_already_scheduled = has_upload_id
+                if not is_already_scheduled:
+                    try:
+                        with SessionLocal() as db_chk:
+                            existing_post = db_chk.query(Post).filter(
+                                Post.channel == channel,
+                                Post.sheet_row_id == clean_row_id,
+                                Post.status.in_(["queued", "scheduled", "uploaded", "commented"]),
+                            ).first()
+                            if existing_post:
+                                is_already_scheduled = True
+                    except Exception as chk_err:
+                        logger.debug("Could not check existing post for row %s: %s", clean_row_id, chk_err)
 
                 use_title = title.strip() if title and title.strip() else sheet_title
                 use_desc = description.strip() if description and description.strip() else sheet_desc
